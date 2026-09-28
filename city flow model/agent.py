@@ -9,6 +9,7 @@ from typing import Dict, List, Any, Optional
 import pcu
 from degradation import DegradationLadder
 from green_wave import QueuePredictor, green_speed_advisory, select_corridors, corridor_offsets
+from bus_priority import BusPriorityRegistry
 
 
 class TrafficAgent:
@@ -98,6 +99,16 @@ class TrafficAgent:
         self.queue_predictors: Dict[str, QueuePredictor] = {
             p: QueuePredictor() for p in self.phase_names
         }
+
+        # Feature 7: conditional bus priority (only late buses get a boost).
+        self.bus_priority = BusPriorityRegistry()
+
+    def register_bus(self, bus_id: str, phase_name: str, scheduled_minutes: float, predicted_minutes: float) -> bool:
+        """Feature 7: report/refresh a bus's schedule adherence. Returns True if it now qualifies for priority."""
+        return self.bus_priority.update(bus_id, phase_name, scheduled_minutes, predicted_minutes)
+
+    def clear_bus(self, bus_id: str) -> None:
+        self.bus_priority.clear(bus_id)
 
     def set_control_mode(self, mode: str) -> None:
         """Move this agent to a rung of the degradation ladder (Feature 9)."""
@@ -293,6 +304,10 @@ class TrafficAgent:
         if wait_time > self.STARVATION_LIMIT:
             boost = min(0.6, (wait_time - self.STARVATION_LIMIT) / self.STARVATION_LIMIT * 0.5)
             priority += boost
+
+        # Feature 7: conditional bus priority — only buses running late
+        # contribute a boost; an on-time bus adds nothing.
+        priority += self.bus_priority.boost_for_phase(phase_name)
 
         if self.emergency_override == phase_name:
             priority += 10.0
@@ -559,6 +574,7 @@ class TrafficAgent:
         self.pedestrian_protection_remaining = {p: 0 for p in self.phase_names}
         for predictor in self.queue_predictors.values():
             predictor.reset()
+        self.bus_priority.clear_all()
         self.last_decision_reason = "Reset Complete."
 
 
