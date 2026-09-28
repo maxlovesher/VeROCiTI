@@ -8,6 +8,7 @@ from typing import Dict, List, Any, Optional
 
 import pcu
 from degradation import DegradationLadder
+from green_wave import QueuePredictor, green_speed_advisory, select_corridors, corridor_offsets
 
 
 class TrafficAgent:
@@ -92,6 +93,11 @@ class TrafficAgent:
         self.pedestrian_demand: Dict[str, bool] = {p: False for p in self.phase_names}
         self.pedestrian_wait_tracker: Dict[str, int] = {p: 0 for p in self.phase_names}
         self.pedestrian_protection_remaining: Dict[str, int] = {p: 0 for p in self.phase_names}
+
+        # Feature 6: one short-term queue predictor per phase.
+        self.queue_predictors: Dict[str, QueuePredictor] = {
+            p: QueuePredictor() for p in self.phase_names
+        }
 
     def set_control_mode(self, mode: str) -> None:
         """Move this agent to a rung of the degradation ladder (Feature 9)."""
@@ -198,6 +204,29 @@ class TrafficAgent:
             wait_sec = self.waiting_time_tracker[phase_name]
             waiting_score = min(1.0, round(wait_sec / self.STARVATION_LIMIT, 3))
 
+            # Feature 6: short-term queue prediction (~5 min ahead).
+            predictor = self.queue_predictors[phase_name]
+            predictor.record(waiting_pcu)
+            predicted_queue_5min = predictor.predict(300.0)
+
+            # Feature 8: green-light speed advisory for this approach's VMS.
+            # Only meaningful while the phase is red (waiting for its own
+            # green) — while it's already green there's nothing to advise.
+            approach_distance_m = self.LANE_CAPACITY * 7.0  # rough stand-in for real VMS/detector placement upstream of the stop line
+            if is_active:
+                speed_advisory = {"advisory_kmph": None, "arrives_on_red": False, "message": "Signal is green — proceed at the posted limit."}
+            elif self.is_yellow and self.target_phase == self.phase_names.index(phase_name):
+                speed_advisory = green_speed_advisory(approach_distance_m, self.yellow_timer)
+            elif self.phase_names[self.current_phase] == phase_name:
+                # Mid-transition edge case: this phase is the one just going
+                # yellow, so its next green is a full cycle away. Too far
+                # ahead to estimate precisely from here — fall back to a
+                # conservative minimum-cycle estimate rather than guessing.
+                speed_advisory = green_speed_advisory(approach_distance_m, self.MIN_GREEN + self.YELLOW_TIME)
+            else:
+                time_to_green = max(0, self.allocated_green - self.steps_on_phase) + self.YELLOW_TIME
+                speed_advisory = green_speed_advisory(approach_distance_m, time_to_green)
+
             cong_score = round(
                 0.50 * density + 0.30 * queue_score + 0.20 * waiting_score,
                 3
@@ -218,7 +247,10 @@ class TrafficAgent:
                 "status": "HIGH" if density > 0.55 else "MEDIUM" if density > 0.22 else "LOW",
                 "pedestrian_waiting": self.pedestrian_demand.get(phase_name, False),
                 "pedestrian_wait_time": self.pedestrian_wait_tracker.get(phase_name, 0),
-                "pedestrian_walk_protected": self.pedestrian_protection_remaining.get(phase_name, 0) > 0
+                "pedestrian_walk_protected": self.pedestrian_protection_remaining.get(phase_name, 0) > 0,
+                "predicted_queue_5min": predicted_queue_5min,
+                "queue_trend": predictor.trend(),
+                "speed_advisory": speed_advisory
             }
 
         self.local_obs = obs
@@ -525,6 +557,8 @@ class TrafficAgent:
         self.pedestrian_demand = {p: False for p in self.phase_names}
         self.pedestrian_wait_tracker = {p: 0 for p in self.phase_names}
         self.pedestrian_protection_remaining = {p: 0 for p in self.phase_names}
+        for predictor in self.queue_predictors.values():
+            predictor.reset()
         self.last_decision_reason = "Reset Complete."
 
 
@@ -623,6 +657,29 @@ class MultiAgentCoordinator:
     def force_control_mode(self, rung: Optional[str]) -> str:
         """Operator override for the degradation ladder (Feature 9). Pass None to release the pin."""
         return self.degradation.force(rung)
+
+    def _adjacency(self) -> Dict[str, Dict[str, str]]:
+        """Builds the {junction: {neighbor: phase_facing_it}} map select_corridors() needs, straight from the live agents."""
+        adjacency: Dict[str, Dict[str, str]] = {}
+        for jid, agent in self.agents.items():
+            for phase_name, neighbor_id in agent.outgoing_neighbors.items():
+                if neighbor_id:
+                    adjacency.setdefault(jid, {})[neighbor_id] = phase_name
+        return adjacency
+
+    def compute_green_wave(
+        self, od_flow: List[Dict[str, Any]], link_distances_m: Optional[Dict] = None,
+        travel_speed_kmph: float = 40.0, top_n: int = 1
+    ) -> List[Dict[str, Any]]:
+        """
+        Feature 5: pick the corridor(s) worth synchronising from OD flow
+        data, with per-junction start offsets (Feature 5's practical output —
+        what a green-wave scheduler would actually apply).
+        """
+        corridors = select_corridors(od_flow, self._adjacency(), top_n=top_n)
+        for corridor in corridors:
+            corridor["offsets_s"] = corridor_offsets(corridor, link_distances_m or {}, travel_speed_kmph)
+        return corridors
 
     def _update_ambulance(self):
         if not self.ambulance["active"]:
