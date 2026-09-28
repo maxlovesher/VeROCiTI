@@ -20,7 +20,7 @@ Pure logic, no DB/Flask dependency, independently unit-testable.
 import hashlib
 import hmac
 import os
-from datetime import date as _date_type, datetime
+from datetime import date as _date_type, datetime, timezone
 from typing import Optional
 
 # In a real deployment this MUST come from a secret manager / env var, never
@@ -37,7 +37,7 @@ def _secret() -> str:
 
 
 def _day_string(day: Optional[_date_type] = None) -> str:
-    d = day or datetime.utcnow().date()
+    d = day or datetime.now(timezone.utc).date()
     return d.isoformat()
 
 
