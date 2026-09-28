@@ -7,6 +7,7 @@ import time
 from typing import Dict, List, Any, Optional
 
 import pcu
+from degradation import DegradationLadder
 
 
 class TrafficAgent:
@@ -22,6 +23,25 @@ class TrafficAgent:
     # Feature 4: absolute wait ceiling — past this, the starved approach gets
     # green unconditionally, regardless of relative priority or spillback risk.
     STARVATION_HARD_CAP = 55
+
+    # Feature 9: degradation ladder. Each rung needs strictly less live data
+    # than the one before it, so the controller can keep running signal
+    # timing safely as inputs get worse:
+    #   FULL_AI            — everything: PCU density, downstream/spillback
+    #                         awareness, incident penalties, live priorities.
+    #   HISTORICAL_PROFILE — no live density/priority at all, just a
+    #                         pre-set time-of-day green split per phase.
+    #   LOCAL_ACTUATED     — live local queues/waits only, no cross-junction
+    #                         (downstream/incident) awareness.
+    #   FIXED_TIME         — ignores all sensor data; plain round-robin
+    #                         fixed-duration phases (the classic hardware
+    #                         fail-safe behaviour).
+    # Emergency ambulance preemption and the minimum/maximum green
+    # interlocks stay active at every rung — those are safety behaviour,
+    # not "smart" control, and shouldn't degrade with data quality.
+    CONTROL_MODES = ("FULL_AI", "HISTORICAL_PROFILE", "LOCAL_ACTUATED", "FIXED_TIME")
+    FIXED_TIME_GREEN = 25
+    HISTORICAL_CYCLE_LENGTH = 50
 
     def __init__(
         self,
@@ -53,6 +73,23 @@ class TrafficAgent:
         self.incidents: Dict[str, Any] = {}
         self.emergency_override: Optional[str] = None
         self.step_counter = 0
+
+        self.control_mode = "FULL_AI"
+        self.historical_green_split = {p: 1.0 / len(self.phase_names) for p in self.phase_names}
+        self.pedestrian_demand: Dict[str, Dict[str, Any]] = {}
+
+    def set_control_mode(self, mode: str) -> None:
+        """Move this agent to a rung of the degradation ladder (Feature 9)."""
+        if mode not in self.CONTROL_MODES:
+            raise ValueError(f"Unknown control mode '{mode}', expected one of {self.CONTROL_MODES}")
+        self.control_mode = mode
+
+    def set_historical_profile(self, green_split: Dict[str, float]) -> None:
+        """Set the fixed time-of-day green split used by HISTORICAL_PROFILE mode. Values are normalised to sum to 1."""
+        total = sum(max(0.0, v) for v in green_split.values()) or 1.0
+        self.historical_green_split = {
+            p: max(0.0, green_split.get(p, 0.0)) / total for p in self.phase_names
+        }
 
     def _pcu_counts_for_lane(self, lane_id: str, raw_count: int, vehicle_info_map: Dict[str, Any]) -> float:
         """
@@ -153,29 +190,35 @@ class TrafficAgent:
     def compute_priority(
         self,
         phase_name: str,
-        neighbor_states: Dict[str, Any]
+        neighbor_states: Dict[str, Any],
+        use_downstream: bool = True
     ) -> float:
         obs = self.local_obs.get(phase_name, {})
         local_cong = obs.get("congestion_score", 0.0)
 
-        # Check if an incident is active on any outgoing road for this phase
-        incident_penalty = 1.0
-        for inc in self.incidents.values():
-            if inc.get("active"):
-                inc_road = inc.get("road", "")
-                # If accident is on road_J3_J2 (outgoing North road), penalize NS phase at J3
-                if "J3_J2" in inc_road and phase_name == "NS" and self.junction_id == "J3":
-                    incident_penalty = 0.08
+        if not use_downstream:
+            # LOCAL_ACTUATED rung (Feature 9): decide from this junction's own
+            # queues only, with no cross-junction/incident awareness.
+            priority = local_cong
+        else:
+            # Check if an incident is active on any outgoing road for this phase
+            incident_penalty = 1.0
+            for inc in self.incidents.values():
+                if inc.get("active"):
+                    inc_road = inc.get("road", "")
+                    # If accident is on road_J3_J2 (outgoing North road), penalize NS phase at J3
+                    if "J3_J2" in inc_road and phase_name == "NS" and self.junction_id == "J3":
+                        incident_penalty = 0.08
 
-        neighbor_id = self.outgoing_neighbors.get(phase_name)
-        downstream_density = 0.0
+            neighbor_id = self.outgoing_neighbors.get(phase_name)
+            downstream_density = 0.0
 
-        if neighbor_id and neighbor_id in neighbor_states:
-            n_data = neighbor_states[neighbor_id]
-            downstream_density = n_data.get("overall_density", 0.0)
+            if neighbor_id and neighbor_id in neighbor_states:
+                n_data = neighbor_states[neighbor_id]
+                downstream_density = n_data.get("overall_density", 0.0)
 
-        downstream_cap_factor = max(0.20, 1.0 - downstream_density) * incident_penalty
-        priority = local_cong * downstream_cap_factor
+            downstream_cap_factor = max(0.20, 1.0 - downstream_density) * incident_penalty
+            priority = local_cong * downstream_cap_factor
 
         wait_time = obs.get("waiting_time", 0)
         if wait_time > self.STARVATION_LIMIT:
@@ -217,15 +260,21 @@ class TrafficAgent:
                 self.last_decision_reason = "🚨 Holding GREEN for Ambulance Corridor."
                 return self.last_decision_reason
 
-        # 2. Autonomous Multi-Agent Adaptive Control
-        priorities = {}
-        for p in self.phase_names:
-            priorities[p] = self.compute_priority(p, neighbor_states)
-        self.priorities = priorities
-
         cur_phase_name = self.phase_names[self.current_phase]
         other_phase_idx = 1 - self.current_phase
         other_phase_name = self.phase_names[other_phase_idx]
+
+        # Feature 9, rung 4 (most degraded): ignores all sensor data.
+        if self.control_mode == "FIXED_TIME":
+            return self._decide_fixed_time(cur_phase_name, other_phase_idx)
+
+        use_downstream = self.control_mode != "LOCAL_ACTUATED"
+
+        # 2. Autonomous Multi-Agent Adaptive Control
+        priorities = {}
+        for p in self.phase_names:
+            priorities[p] = self.compute_priority(p, neighbor_states, use_downstream=use_downstream)
+        self.priorities = priorities
 
         cur_priority = priorities.get(cur_phase_name, 0.0)
         other_priority = priorities.get(other_phase_name, 0.0)
@@ -242,6 +291,10 @@ class TrafficAgent:
             self.last_decision_reason = f"Holding {cur_phase_name}-Green (Min hold: {remaining_min}s left){incident_note}."
             return self.last_decision_reason
 
+        # Feature 9, rung 2: no live priorities at all, just the historical split.
+        if self.control_mode == "HISTORICAL_PROFILE":
+            return self._decide_historical_profile(cur_phase_name, other_phase_idx, other_phase_name)
+
         # Maximum green constraint
         if self.steps_on_phase >= self.MAX_GREEN:
             self._initiate_switch(other_phase_idx, other_priority, "Max green duration reached")
@@ -252,7 +305,8 @@ class TrafficAgent:
         # Feature 4: starvation hard cap — past this wait, force the switch no
         # matter what the priority comparison says (safety ceiling, not a
         # preference). Checked before spillback so a starved approach is
-        # never left waiting behind a spillback hold.
+        # never left waiting behind a spillback hold. Active on every rung
+        # that still tracks live waits (FULL_AI and LOCAL_ACTUATED).
         if other_wait > self.STARVATION_HARD_CAP:
             self._initiate_switch(
                 other_phase_idx, max(other_priority, 1.0),
@@ -260,20 +314,19 @@ class TrafficAgent:
             )
             return self.last_decision_reason
 
-        # Feature 3: spillback / box-blocking prevention — if the road this
-        # phase feeds is already near full, stop sending it more vehicles
-        # even though it still holds priority. Prevents this junction from
-        # locking up the one downstream of it.
-        cur_neighbor = self.outgoing_neighbors.get(cur_phase_name)
-        cur_downstream_density = 0.0
-        if cur_neighbor and cur_neighbor in neighbor_states:
-            cur_downstream_density = neighbor_states[cur_neighbor].get("overall_density", 0.0)
-        if cur_downstream_density >= self.SPILLBACK_DENSITY_THRESHOLD:
-            self._initiate_switch(
-                other_phase_idx, other_priority,
-                f"Spillback prevention: exit toward {cur_neighbor} at {int(cur_downstream_density * 100)}% capacity"
-            )
-            return self.last_decision_reason
+        # Feature 3: spillback / box-blocking prevention — needs downstream
+        # density, so it only runs at the FULL_AI rung.
+        if use_downstream:
+            cur_neighbor = self.outgoing_neighbors.get(cur_phase_name)
+            cur_downstream_density = 0.0
+            if cur_neighbor and cur_neighbor in neighbor_states:
+                cur_downstream_density = neighbor_states[cur_neighbor].get("overall_density", 0.0)
+            if cur_downstream_density >= self.SPILLBACK_DENSITY_THRESHOLD:
+                self._initiate_switch(
+                    other_phase_idx, other_priority,
+                    f"Spillback prevention: exit toward {cur_neighbor} at {int(cur_downstream_density * 100)}% capacity"
+                )
+                return self.last_decision_reason
 
         # Starvation trigger (soft — only switches early if the other phase also has real need)
         if other_wait > self.STARVATION_LIMIT and other_priority > cur_priority:
@@ -288,14 +341,58 @@ class TrafficAgent:
         if other_priority > cur_priority * self.SWITCH_RATIO and other_priority > 0.15:
             neighbor = self.outgoing_neighbors.get(cur_phase_name)
             reason = f"Higher load on {other_phase_name} (P={other_priority} vs {cur_priority}){incident_note}"
-            if neighbor and neighbor in neighbor_states:
+            if use_downstream and neighbor and neighbor in neighbor_states:
                 n_cap = 1.0 - neighbor_states[neighbor].get("overall_density", 0.0)
                 reason += f" · Neighbor {neighbor} cap={int(n_cap*100)}%"
             self._initiate_switch(other_phase_idx, other_priority, reason)
             return self.last_decision_reason
 
+        mode_tag = "" if self.control_mode == "FULL_AI" else f"[{self.control_mode}] "
         self.last_decision_reason = (
-            f"Maintaining {cur_phase_name}-Green (P={cur_priority} vs {other_phase_name} P={other_priority}){incident_note}."
+            f"{mode_tag}Maintaining {cur_phase_name}-Green (P={cur_priority} vs {other_phase_name} P={other_priority}){incident_note}."
+        )
+        return self.last_decision_reason
+
+    def _decide_fixed_time(self, cur_phase_name: str, other_phase_idx: int) -> str:
+        """Feature 9 rung 4: plain round-robin fixed-duration phases, no sensor input at all."""
+        if self.steps_on_phase < self.MIN_GREEN:
+            remaining = self.MIN_GREEN - self.steps_on_phase
+            self.last_decision_reason = f"[FIXED_TIME] Holding {cur_phase_name}-Green (min hold: {remaining}s left)."
+            return self.last_decision_reason
+        if self.steps_on_phase >= self.FIXED_TIME_GREEN:
+            self._initiate_switch(other_phase_idx, 1.0, f"[FIXED_TIME] Fixed {self.FIXED_TIME_GREEN}s cycle elapsed")
+            self.allocated_green = self.FIXED_TIME_GREEN
+            return self.last_decision_reason
+        remaining = self.FIXED_TIME_GREEN - self.steps_on_phase
+        self.last_decision_reason = f"[FIXED_TIME] Holding {cur_phase_name}-Green ({remaining}s left in fixed cycle)."
+        return self.last_decision_reason
+
+    def _decide_historical_profile(self, cur_phase_name: str, other_phase_idx: int, other_phase_name: str) -> str:
+        """Feature 9 rung 2: a pre-set time-of-day green split, no live priority computation."""
+        other_wait = self.local_obs.get(other_phase_name, {}).get("waiting_time", 0)
+        # Even a non-adaptive fallback must not starve an approach indefinitely.
+        if other_wait > self.STARVATION_HARD_CAP:
+            other_target = max(self.MIN_GREEN, round(
+                self.historical_green_split.get(other_phase_name, 0.5) * self.HISTORICAL_CYCLE_LENGTH))
+            self._initiate_switch(
+                other_phase_idx, 1.0,
+                f"[HISTORICAL_PROFILE] Hard starvation cap reached ({other_phase_name} waited {other_wait}s)"
+            )
+            self.allocated_green = other_target
+            return self.last_decision_reason
+
+        target_green = max(self.MIN_GREEN, round(
+            self.historical_green_split.get(cur_phase_name, 0.5) * self.HISTORICAL_CYCLE_LENGTH))
+        if self.steps_on_phase >= target_green:
+            other_target = max(self.MIN_GREEN, round(
+                self.historical_green_split.get(other_phase_name, 0.5) * self.HISTORICAL_CYCLE_LENGTH))
+            self._initiate_switch(other_phase_idx, 1.0, f"[HISTORICAL_PROFILE] Historical split reached ({target_green}s)")
+            self.allocated_green = other_target
+            return self.last_decision_reason
+
+        remaining = target_green - self.steps_on_phase
+        self.last_decision_reason = (
+            f"[HISTORICAL_PROFILE] Holding {cur_phase_name}-Green ({remaining}s left of historical {target_green}s)."
         )
         return self.last_decision_reason
 
@@ -338,7 +435,8 @@ class TrafficAgent:
             "emergency_active": self.emergency_override is not None,
             "local_obs": self.local_obs,
             "priorities": self.priorities,
-            "decision_reason": self.last_decision_reason
+            "decision_reason": self.last_decision_reason,
+            "control_mode": self.control_mode
         }
 
     def set_incident(self, road_id: str, incident_type: str, active: bool = True):
@@ -368,6 +466,7 @@ class TrafficAgent:
         self.priorities = {}
         self.incidents = {}
         self.emergency_override = None
+        self.control_mode = "FULL_AI"
         self.last_decision_reason = "Reset Complete."
 
 
@@ -376,6 +475,7 @@ class MultiAgentCoordinator:
         self.engine = engine
         self.agents: Dict[str, TrafficAgent] = {}
         self.message_history: List[Dict[str, Any]] = []
+        self.degradation = DegradationLadder()
 
         self.ambulance: Dict[str, Any] = {
             "active": False,
@@ -421,7 +521,20 @@ class MultiAgentCoordinator:
             outgoing_neighbors={"EW": None, "NS": "J3"}
         )
 
-    def step(self, vehicle_info_map: Dict[str, Any]) -> Dict[str, Any]:
+    def step(self, vehicle_info_map: Dict[str, Any], data_ok: bool = True) -> Dict[str, Any]:
+        """
+        data_ok: health signal for this step's sensor data (Feature 9). Pass
+        False when the caller knows this step's input was bad/missing/stale
+        (e.g. the vehicle feed timed out) to push the degradation ladder
+        toward a safer, less data-hungry control mode; defaults to True so
+        existing callers that never pass it keep running at FULL_AI exactly
+        as before.
+        """
+        current_rung = self.degradation.record_health(data_ok)
+        for agent in self.agents.values():
+            if agent.control_mode != current_rung:
+                agent.set_control_mode(current_rung)
+
         self._update_ambulance()
 
         for agent in self.agents.values():
@@ -445,8 +558,13 @@ class MultiAgentCoordinator:
         return {
             "broadcasts": current_broadcasts,
             "decisions": decisions,
-            "ambulance": dict(self.ambulance)
+            "ambulance": dict(self.ambulance),
+            "control_mode": current_rung
         }
+
+    def force_control_mode(self, rung: Optional[str]) -> str:
+        """Operator override for the degradation ladder (Feature 9). Pass None to release the pin."""
+        return self.degradation.force(rung)
 
     def _update_ambulance(self):
         if not self.ambulance["active"]:
@@ -510,5 +628,6 @@ class MultiAgentCoordinator:
             agent.reset()
         self.message_history.clear()
         self.active_incidents.clear()
+        self.degradation.reset()
         self.ambulance["active"] = False
         self.ambulance["progress_m"] = 0.0
