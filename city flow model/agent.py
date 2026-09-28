@@ -43,6 +43,16 @@ class TrafficAgent:
     FIXED_TIME_GREEN = 25
     HISTORICAL_CYCLE_LENGTH = 50
 
+    # Feature 10: pedestrian-demand walk phase. Demand for phase P means
+    # "people are waiting to cross P's road" — they can only walk while P is
+    # red (i.e. the other phase is green). PED_MAX_WAIT forces P to end early
+    # if that wait drags on; PED_MIN_WALK then protects the crossing for a
+    # minimum interval by refusing to switch back to P prematurely.
+    # Kept below MAX_GREEN on purpose — a pedestrian shouldn't have to wait
+    # as long as a full vehicle max-green cycle before getting a call served.
+    PED_MAX_WAIT = 30
+    PED_MIN_WALK = 12
+
     def __init__(
         self,
         agent_id: str,
@@ -76,7 +86,12 @@ class TrafficAgent:
 
         self.control_mode = "FULL_AI"
         self.historical_green_split = {p: 1.0 / len(self.phase_names) for p in self.phase_names}
-        self.pedestrian_demand: Dict[str, Dict[str, Any]] = {}
+
+        # Feature 10: pedestrian demand. Keyed by phase_name = "people
+        # waiting to cross this phase's road" (so they walk while it's red).
+        self.pedestrian_demand: Dict[str, bool] = {p: False for p in self.phase_names}
+        self.pedestrian_wait_tracker: Dict[str, int] = {p: 0 for p in self.phase_names}
+        self.pedestrian_protection_remaining: Dict[str, int] = {p: 0 for p in self.phase_names}
 
     def set_control_mode(self, mode: str) -> None:
         """Move this agent to a rung of the degradation ladder (Feature 9)."""
@@ -90,6 +105,14 @@ class TrafficAgent:
         self.historical_green_split = {
             p: max(0.0, green_split.get(p, 0.0)) / total for p in self.phase_names
         }
+
+    def set_pedestrian_demand(self, phase_name: str, waiting: bool) -> None:
+        """Feature 10: called from a camera/detector — people are (or are no longer) waiting to cross phase_name's road."""
+        if phase_name not in self.pedestrian_demand:
+            return
+        self.pedestrian_demand[phase_name] = waiting
+        if not waiting:
+            self.pedestrian_wait_tracker[phase_name] = 0
 
     def _pcu_counts_for_lane(self, lane_id: str, raw_count: int, vehicle_info_map: Dict[str, Any]) -> float:
         """
@@ -161,6 +184,17 @@ class TrafficAgent:
                 else:
                     self.waiting_time_tracker[phase_name] = 0
 
+            # Feature 10: pedestrians waiting to cross phase_name's road can
+            # only be counted against while phase_name is actually green
+            # (that's when their crossing is blocked); once it goes red
+            # they're free to walk, so the wait resets.
+            if is_active and self.pedestrian_demand.get(phase_name):
+                self.pedestrian_wait_tracker[phase_name] = self.pedestrian_wait_tracker.get(phase_name, 0) + 1
+            elif not is_active:
+                self.pedestrian_wait_tracker[phase_name] = 0
+            if not is_active and self.pedestrian_protection_remaining.get(phase_name, 0) > 0:
+                self.pedestrian_protection_remaining[phase_name] -= 1
+
             wait_sec = self.waiting_time_tracker[phase_name]
             waiting_score = min(1.0, round(wait_sec / self.STARVATION_LIMIT, 3))
 
@@ -181,7 +215,10 @@ class TrafficAgent:
                 "waiting_time": wait_sec,
                 "waiting_score": waiting_score,
                 "congestion_score": cong_score,
-                "status": "HIGH" if density > 0.55 else "MEDIUM" if density > 0.22 else "LOW"
+                "status": "HIGH" if density > 0.55 else "MEDIUM" if density > 0.22 else "LOW",
+                "pedestrian_waiting": self.pedestrian_demand.get(phase_name, False),
+                "pedestrian_wait_time": self.pedestrian_wait_tracker.get(phase_name, 0),
+                "pedestrian_walk_protected": self.pedestrian_protection_remaining.get(phase_name, 0) > 0
             }
 
         self.local_obs = obs
@@ -295,6 +332,22 @@ class TrafficAgent:
         if self.control_mode == "HISTORICAL_PROFILE":
             return self._decide_historical_profile(cur_phase_name, other_phase_idx, other_phase_name)
 
+        # Feature 10: pedestrian call — people have been waiting too long to
+        # cross the currently-green approach, so force the switch and open a
+        # protected walk window on the way out.
+        ped_wait = self.pedestrian_wait_tracker.get(cur_phase_name, 0)
+        if self.pedestrian_demand.get(cur_phase_name) and ped_wait > self.PED_MAX_WAIT:
+            self._initiate_switch(
+                other_phase_idx, max(other_priority, 1.0),
+                f"🚶 Pedestrian call: {cur_phase_name} crossing waited {ped_wait}s ≥ {self.PED_MAX_WAIT}s"
+            )
+            self.pedestrian_protection_remaining[cur_phase_name] = self.PED_MIN_WALK
+            return self.last_decision_reason
+
+        # Feature 10 continued: don't switch back into a phase whose
+        # pedestrians are still inside their protected walk window.
+        ped_protected_other = self.pedestrian_protection_remaining.get(other_phase_name, 0) > 0
+
         # Maximum green constraint
         if self.steps_on_phase >= self.MAX_GREEN:
             self._initiate_switch(other_phase_idx, other_priority, "Max green duration reached")
@@ -328,8 +381,9 @@ class TrafficAgent:
                 )
                 return self.last_decision_reason
 
-        # Starvation trigger (soft — only switches early if the other phase also has real need)
-        if other_wait > self.STARVATION_LIMIT and other_priority > cur_priority:
+        # Starvation trigger (soft — only switches early if the other phase
+        # also has real need, and not into a phase still protecting a walk)
+        if other_wait > self.STARVATION_LIMIT and other_priority > cur_priority and not ped_protected_other:
             self._initiate_switch(
                 other_phase_idx,
                 other_priority,
@@ -337,8 +391,8 @@ class TrafficAgent:
             )
             return self.last_decision_reason
 
-        # Adaptive switch
-        if other_priority > cur_priority * self.SWITCH_RATIO and other_priority > 0.15:
+        # Adaptive switch (also respects an active walk-protection window)
+        if other_priority > cur_priority * self.SWITCH_RATIO and other_priority > 0.15 and not ped_protected_other:
             neighbor = self.outgoing_neighbors.get(cur_phase_name)
             reason = f"Higher load on {other_phase_name} (P={other_priority} vs {cur_priority}){incident_note}"
             if use_downstream and neighbor and neighbor in neighbor_states:
@@ -348,8 +402,9 @@ class TrafficAgent:
             return self.last_decision_reason
 
         mode_tag = "" if self.control_mode == "FULL_AI" else f"[{self.control_mode}] "
+        ped_note = f" [🚶 protecting {other_phase_name} walk, {self.pedestrian_protection_remaining.get(other_phase_name, 0)}s left]" if ped_protected_other else ""
         self.last_decision_reason = (
-            f"{mode_tag}Maintaining {cur_phase_name}-Green (P={cur_priority} vs {other_phase_name} P={other_priority}){incident_note}."
+            f"{mode_tag}Maintaining {cur_phase_name}-Green (P={cur_priority} vs {other_phase_name} P={other_priority}){incident_note}{ped_note}."
         )
         return self.last_decision_reason
 
@@ -467,6 +522,9 @@ class TrafficAgent:
         self.incidents = {}
         self.emergency_override = None
         self.control_mode = "FULL_AI"
+        self.pedestrian_demand = {p: False for p in self.phase_names}
+        self.pedestrian_wait_tracker = {p: 0 for p in self.phase_names}
+        self.pedestrian_protection_remaining = {p: 0 for p in self.phase_names}
         self.last_decision_reason = "Reset Complete."
 
 
