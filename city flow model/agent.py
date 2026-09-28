@@ -6,6 +6,8 @@ agent.py — Distributed Multi-Agent Traffic Light Control System
 import time
 from typing import Dict, List, Any, Optional
 
+import pcu
+
 
 class TrafficAgent:
     LANE_CAPACITY = 14.0
@@ -14,6 +16,12 @@ class TrafficAgent:
     YELLOW_TIME = 2
     STARVATION_LIMIT = 35
     SWITCH_RATIO = 1.25
+    # Feature 3: once the outgoing road for the current phase is at/above this
+    # density, stop feeding it more vehicles (box-blocking / spillback risk).
+    SPILLBACK_DENSITY_THRESHOLD = 0.90
+    # Feature 4: absolute wait ceiling — past this, the starved approach gets
+    # green unconditionally, regardless of relative priority or spillback risk.
+    STARVATION_HARD_CAP = 55
 
     def __init__(
         self,
@@ -46,14 +54,37 @@ class TrafficAgent:
         self.emergency_override: Optional[str] = None
         self.step_counter = 0
 
+    def _pcu_counts_for_lane(self, lane_id: str, raw_count: int, vehicle_info_map: Dict[str, Any]) -> float:
+        """
+        PCU-weighted vehicle count for one lane (Feature 1). Uses the engine's
+        per-lane vehicle id list when available so mixed traffic (buses,
+        trucks, two-wheelers) counts for more/less than one car each. Falls
+        back to the raw count untouched when the engine can't hand back ids
+        (older CityFlow builds, or a lightweight test double), so behaviour
+        never regresses when this information just isn't there.
+        """
+        get_lane_vehicles = getattr(self.engine, "get_lane_vehicles", None)
+        if not callable(get_lane_vehicles):
+            return float(raw_count)
+        try:
+            ids = get_lane_vehicles().get(lane_id, [])
+        except Exception:
+            return float(raw_count)
+        if not ids:
+            return 0.0
+        _, weighted = pcu.weighted_count(ids, vehicle_info_map)
+        return weighted
+
     def observe(self, vehicle_info_map: Dict[str, Any]) -> Dict[str, Any]:
         lane_waiting = self.engine.get_lane_waiting_vehicle_count()
         lane_vehicles = self.engine.get_lane_vehicle_count()
 
         obs = {}
         for phase_name, roads in self.incoming_roads.items():
-            total_veh = 0
-            waiting_veh = 0
+            total_veh = 0        # raw vehicle count (kept for API/back-compat)
+            waiting_veh = 0      # raw waiting count (kept for API/back-compat)
+            total_pcu = 0.0      # PCU-weighted count, drives density/control decisions
+            waiting_pcu = 0.0    # PCU-weighted waiting count
             speeds = []
 
             for r in roads:
@@ -62,6 +93,12 @@ class TrafficAgent:
                 v = lane_vehicles.get(lane_id, 0)
                 total_veh += v
                 waiting_veh += w
+                total_pcu += self._pcu_counts_for_lane(lane_id, v, vehicle_info_map)
+                # No per-lane "which ids are waiting" call exists on the engine,
+                # so approximate weighted waiting by applying the lane's
+                # observed PCU/raw ratio to the raw waiting count.
+                lane_pcu_ratio = (total_pcu / v) if v else 1.0
+                waiting_pcu += w * lane_pcu_ratio
 
             for v_data in vehicle_info_map.values():
                 if v_data.get("road") in roads:
@@ -72,9 +109,11 @@ class TrafficAgent:
 
             avg_speed = round(sum(speeds) / len(speeds), 1) if speeds else 16.67
             total_cap = len(roads) * self.LANE_CAPACITY
+            total_pcu = round(total_pcu, 3)
+            waiting_pcu = round(waiting_pcu, 3)
 
-            density = min(1.0, round(total_veh / total_cap, 3))
-            queue_score = min(1.0, round(waiting_veh / total_cap, 3))
+            density = min(1.0, round(total_pcu / total_cap, 3))
+            queue_score = min(1.0, round(waiting_pcu / total_cap, 3))
 
             is_active = (self.phase_names[self.current_phase] == phase_name and not self.is_yellow)
             if is_active:
@@ -96,6 +135,8 @@ class TrafficAgent:
             obs[phase_name] = {
                 "vehicle_count": total_veh,
                 "queue_length": waiting_veh,
+                "vehicle_count_pcu": total_pcu,
+                "queue_length_pcu": waiting_pcu,
                 "average_speed": avg_speed,
                 "lane_capacity": total_cap,
                 "density": density,
@@ -206,8 +247,35 @@ class TrafficAgent:
             self._initiate_switch(other_phase_idx, other_priority, "Max green duration reached")
             return self.last_decision_reason
 
-        # Starvation trigger
         other_wait = self.local_obs.get(other_phase_name, {}).get("waiting_time", 0)
+
+        # Feature 4: starvation hard cap — past this wait, force the switch no
+        # matter what the priority comparison says (safety ceiling, not a
+        # preference). Checked before spillback so a starved approach is
+        # never left waiting behind a spillback hold.
+        if other_wait > self.STARVATION_HARD_CAP:
+            self._initiate_switch(
+                other_phase_idx, max(other_priority, 1.0),
+                f"Hard starvation cap reached ({other_phase_name} waited {other_wait}s ≥ {self.STARVATION_HARD_CAP}s)"
+            )
+            return self.last_decision_reason
+
+        # Feature 3: spillback / box-blocking prevention — if the road this
+        # phase feeds is already near full, stop sending it more vehicles
+        # even though it still holds priority. Prevents this junction from
+        # locking up the one downstream of it.
+        cur_neighbor = self.outgoing_neighbors.get(cur_phase_name)
+        cur_downstream_density = 0.0
+        if cur_neighbor and cur_neighbor in neighbor_states:
+            cur_downstream_density = neighbor_states[cur_neighbor].get("overall_density", 0.0)
+        if cur_downstream_density >= self.SPILLBACK_DENSITY_THRESHOLD:
+            self._initiate_switch(
+                other_phase_idx, other_priority,
+                f"Spillback prevention: exit toward {cur_neighbor} at {int(cur_downstream_density * 100)}% capacity"
+            )
+            return self.last_decision_reason
+
+        # Starvation trigger (soft — only switches early if the other phase also has real need)
         if other_wait > self.STARVATION_LIMIT and other_priority > cur_priority:
             self._initiate_switch(
                 other_phase_idx,
