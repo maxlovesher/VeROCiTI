@@ -10,6 +10,7 @@ import pcu
 from degradation import DegradationLadder
 from green_wave import QueuePredictor, green_speed_advisory, select_corridors, corridor_offsets
 from bus_priority import BusPriorityRegistry
+import ambulance
 
 
 class TrafficAgent:
@@ -55,6 +56,20 @@ class TrafficAgent:
     PED_MAX_WAIT = 30
     PED_MIN_WALK = 12
 
+    # Feature 11: smarter ambulance corridor — two of its four pieces are
+    # per-junction signal behaviour and live here:
+    #   - amber + all-red: an emergency preemption switch runs yellow, THEN
+    #     an extra all-red clearance, before the emergency phase goes green
+    #     (stricter than the normal yellow-only transition used elsewhere).
+    #   - recovery phase: once the ambulance clears this junction, the
+    #     approach that accumulated the most wait while preempted gets
+    #     served first, for a bounded window, instead of ordinary priority.
+    # (ETA-based triggering and hospital-aware routing are corridor-level
+    # concerns handled by MultiAgentCoordinator + ambulance.py.)
+    ALL_RED_TIME = 1
+    RECOVERY_WINDOW = 20
+    RECOVERY_PRIORITY_BOOST = 5.0
+
     def __init__(
         self,
         agent_id: str,
@@ -84,6 +99,11 @@ class TrafficAgent:
         self.last_decision_reason = "System Initialized."
         self.incidents: Dict[str, Any] = {}
         self.emergency_override: Optional[str] = None
+        self.is_all_red = False
+        self.all_red_timer = 0
+        self._pending_all_red = False
+        self.recovery_mode = False
+        self.recovery_deadline_step = 0
         self.step_counter = 0
 
         self.control_mode = "FULL_AI"
@@ -309,6 +329,16 @@ class TrafficAgent:
         # contribute a boost; an on-time bus adds nothing.
         priority += self.bus_priority.boost_for_phase(phase_name)
 
+        # Feature 11 recovery phase: right after the ambulance clears this
+        # junction, give a strong (but not absolute — emergency and
+        # starvation-hard-cap can still outrank it) boost to whichever
+        # approach is currently the most starved, for a bounded window.
+        if self.recovery_mode:
+            waits = {p: self.local_obs.get(p, {}).get("waiting_time", 0) for p in self.phase_names}
+            most_starved = max(waits, key=waits.get) if waits else None
+            if most_starved == phase_name and waits.get(most_starved, 0) > 0:
+                priority += self.RECOVERY_PRIORITY_BOOST
+
         if self.emergency_override == phase_name:
             priority += 10.0
 
@@ -321,6 +351,15 @@ class TrafficAgent:
             self.yellow_timer -= 1
             if self.yellow_timer <= 0:
                 self.is_yellow = False
+                if self._pending_all_red:
+                    # Feature 11: emergency switches get an extra all-red
+                    # clearance beyond the normal yellow, before the
+                    # ambulance's phase goes green.
+                    self._pending_all_red = False
+                    self.is_all_red = True
+                    self.all_red_timer = self.ALL_RED_TIME
+                    self.last_decision_reason = f"🚨 All-red clearance ({self.all_red_timer}s) before emergency phase."
+                    return self.last_decision_reason
                 self.current_phase = self.target_phase
                 self.steps_on_phase = 0
                 self.engine.set_tl_phase(self.junction_id, self.current_phase)
@@ -331,14 +370,32 @@ class TrafficAgent:
                 self.last_decision_reason = f"Yellow clearance interval ({self.yellow_timer}s remaining)."
                 return self.last_decision_reason
 
+        if self.is_all_red:
+            self.all_red_timer -= 1
+            if self.all_red_timer <= 0:
+                self.is_all_red = False
+                self.current_phase = self.target_phase
+                self.steps_on_phase = 0
+                self.engine.set_tl_phase(self.junction_id, self.current_phase)
+                new_name = self.phase_names[self.current_phase]
+                self.last_decision_reason = f"🚨 Emergency GREEN activated for {new_name} after all-red clearance."
+                return self.last_decision_reason
+            else:
+                self.last_decision_reason = f"🚨 All-red clearance ({self.all_red_timer}s remaining)."
+                return self.last_decision_reason
+
         self.steps_on_phase += 1
+
+        # Feature 11 recovery window expiry.
+        if self.recovery_mode and self.step_counter >= self.recovery_deadline_step:
+            self.recovery_mode = False
 
         # 1. Emergency Ambulance Preemption (Takes absolute precedence)
         if self.emergency_override:
             target_phase_name = self.emergency_override
             target_idx = self.phase_names.index(target_phase_name) if target_phase_name in self.phase_names else 0
             if self.current_phase != target_idx:
-                self._initiate_switch(target_idx, 1.0, "🚨 Emergency Ambulance Corridor Preemption")
+                self._initiate_switch(target_idx, 1.0, "🚨 Emergency Ambulance Corridor Preemption", all_red=True)
                 return self.last_decision_reason
             else:
                 self.last_decision_reason = "🚨 Holding GREEN for Ambulance Corridor."
@@ -498,14 +555,16 @@ class TrafficAgent:
         )
         return self.last_decision_reason
 
-    def _initiate_switch(self, new_phase_idx: int, priority: float, reason: str):
+    def _initiate_switch(self, new_phase_idx: int, priority: float, reason: str, all_red: bool = False):
         self.allocated_green = int(self.MIN_GREEN + min(1.0, priority) * (self.MAX_GREEN - self.MIN_GREEN))
         self.target_phase = new_phase_idx
         self.is_yellow = True
         self.yellow_timer = self.YELLOW_TIME
+        self._pending_all_red = all_red
         old_name = self.phase_names[self.current_phase]
         new_name = self.phase_names[new_phase_idx]
-        self.last_decision_reason = f"Switching {old_name} → {new_name} ({reason}). Allocated: {self.allocated_green}s."
+        suffix = " + all-red clearance" if all_red else ""
+        self.last_decision_reason = f"Switching {old_name} → {new_name} ({reason}){suffix}. Allocated: {self.allocated_green}s."
 
     def get_broadcast_message(self) -> Dict[str, Any]:
         densities = [d.get("density", 0.0) for d in self.local_obs.values()]
@@ -538,7 +597,9 @@ class TrafficAgent:
             "local_obs": self.local_obs,
             "priorities": self.priorities,
             "decision_reason": self.last_decision_reason,
-            "control_mode": self.control_mode
+            "control_mode": self.control_mode,
+            "is_all_red": self.is_all_red,
+            "recovery_mode": self.recovery_mode
         }
 
     def set_incident(self, road_id: str, incident_type: str, active: bool = True):
@@ -554,7 +615,14 @@ class TrafficAgent:
             self.incidents.pop(road_id, None)
 
     def set_emergency(self, phase_name: Optional[str]):
+        was_active = self.emergency_override is not None
         self.emergency_override = phase_name
+        if was_active and phase_name is None:
+            # Ambulance just cleared this junction (Feature 11 recovery
+            # phase): for a bounded window, serve whichever approach
+            # accumulated the most wait while traffic was held for it.
+            self.recovery_mode = True
+            self.recovery_deadline_step = self.step_counter + self.RECOVERY_WINDOW
 
     def reset(self):
         self.current_phase = 0
@@ -568,6 +636,11 @@ class TrafficAgent:
         self.priorities = {}
         self.incidents = {}
         self.emergency_override = None
+        self.is_all_red = False
+        self.all_red_timer = 0
+        self._pending_all_red = False
+        self.recovery_mode = False
+        self.recovery_deadline_step = 0
         self.control_mode = "FULL_AI"
         self.pedestrian_demand = {p: False for p in self.phase_names}
         self.pedestrian_wait_tracker = {p: 0 for p in self.phase_names}
@@ -579,19 +652,33 @@ class TrafficAgent:
 
 
 class MultiAgentCoordinator:
+    # Feature 11: corridor-level ambulance tuning.
+    AMBULANCE_LINK_DISTANCE_M = 200.0   # matches the network's original 200/400/600/800m breakpoints
+    EMERGENCY_LEAD_TIME_S = 15.0        # base preemption lead time before the ambulance would arrive
+    DISCHARGE_HEADWAY_S = 2.0           # extra lead time budgeted per vehicle already queued (early start)
+    AMBULANCE_CLEAR_MARGIN_M = 40.0     # how far past a junction before it's considered "cleared"
+
     def __init__(self, engine: Any):
         self.engine = engine
         self.agents: Dict[str, TrafficAgent] = {}
         self.message_history: List[Dict[str, Any]] = []
         self.degradation = DegradationLadder()
 
+        # Feature 11: hospital-aware routing needs somewhere to route to.
+        self.hospitals: Dict[str, str] = {"City Hospital": "J4", "Capital Hospital": "J5"}
+
         self.ambulance: Dict[str, Any] = {
             "active": False,
             "progress_m": 0.0,
             "speed": 16.0,
-            "route_roads": ["road_VW1_J1", "road_J1_J3", "road_J3_J4", "road_J4_VE4"],
-            "current_road": "road_VW1_J1",
+            "route_junctions": [],
+            "route_roads": [],      # legacy alias, kept for anything still reading it
+            "hospital": None,
+            "current_road": "",
             "road_dist": 0.0,
+            "eta_by_junction": {},
+            "triggered_junctions": [],
+            "cleared_junctions": [],
             "corridor": "EW"
         }
 
@@ -697,46 +784,106 @@ class MultiAgentCoordinator:
             corridor["offsets_s"] = corridor_offsets(corridor, link_distances_m or {}, travel_speed_kmph)
         return corridors
 
+    def _phase_towards(self, junction_id: str, next_junction_id: str) -> Optional[str]:
+        """Which of junction_id's own phases faces next_junction_id (per its outgoing_neighbors)."""
+        agent = self.agents.get(junction_id)
+        if not agent:
+            return None
+        for phase_name, neighbor_id in agent.outgoing_neighbors.items():
+            if neighbor_id == next_junction_id:
+                return phase_name
+        return None
+
+    def dispatch_ambulance(self, origin_junction: str = "J1", hospitals: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
+        """
+        Feature 11: hospital-aware routing — picks the nearest reachable
+        hospital from `origin_junction` and starts the ambulance toward it.
+        Returns the chosen route, or None if no hospital is reachable.
+        """
+        hosp_table = hospitals if hospitals is not None else self.hospitals
+        result = ambulance.nearest_hospital(origin_junction, hosp_table, self._adjacency())
+        if not result:
+            return None
+        hospital_name, route = result
+
+        self.ambulance.update({
+            "active": True,
+            "progress_m": 0.0,
+            "speed": 16.0,
+            "route_junctions": route,
+            "route_roads": route,
+            "hospital": hospital_name,
+            "current_road": f"{route[0]}→{route[1]}" if len(route) > 1 else route[0],
+            "road_dist": 0.0,
+            "eta_by_junction": {},
+            "triggered_junctions": [],
+            "cleared_junctions": [],
+        })
+        return {"hospital": hospital_name, "route_junctions": route}
+
     def _update_ambulance(self):
         if not self.ambulance["active"]:
             return
 
+        route = self.ambulance["route_junctions"]
+        if len(route) < 2:
+            # No usable route (e.g. hospital unreachable from origin) — nothing to drive.
+            self.ambulance["active"] = False
+            return
+
         self.ambulance["progress_m"] += self.ambulance["speed"]
         prog = self.ambulance["progress_m"]
+        link_len = self.AMBULANCE_LINK_DISTANCE_M
+        total_links = len(route) - 1
 
-        if prog < 200:
-            self.ambulance["current_road"] = "road_VW1_J1"
-            self.ambulance["road_dist"] = prog
-            self.agents["J1"].set_emergency("EW")
-            self.agents["J3"].set_emergency("EW")
-        elif prog < 400:
-            self.ambulance["current_road"] = "road_J1_J3"
-            self.ambulance["road_dist"] = prog - 200
-            self.agents["J1"].set_emergency(None)
-            self.agents["J3"].set_emergency("EW")
-            self.agents["J4"].set_emergency("EW")
-        elif prog < 600:
-            self.ambulance["current_road"] = "road_J3_J4"
-            self.ambulance["road_dist"] = prog - 400
-            self.agents["J3"].set_emergency(None)
-            self.agents["J4"].set_emergency("EW")
-        elif prog < 800:
-            self.ambulance["current_road"] = "road_J4_VE4"
-            self.ambulance["road_dist"] = prog - 600
-            self.agents["J4"].set_emergency(None)
-        else:
+        current_link = min(int(prog // link_len), total_links - 1)
+        self.ambulance["current_road"] = f"{route[current_link]}→{route[current_link + 1]}"
+        self.ambulance["road_dist"] = round(prog - current_link * link_len, 1)
+
+        # Feature 11: ETA-based triggering — compute a live ETA to every
+        # junction still ahead, then preempt (with an early-start allowance
+        # for the queue already sitting there) once that ETA is inside the
+        # required lead time. This replaces the old fixed distance
+        # breakpoints with a genuine per-junction ETA calculation.
+        eta_map = {}
+        for i, jid in enumerate(route):
+            remaining_m = max(0.0, i * link_len - prog)
+            eta_map[jid] = round(ambulance.eta_seconds(remaining_m, self.ambulance["speed"]), 1)
+        self.ambulance["eta_by_junction"] = eta_map
+
+        # The hospital's own junction (route[-1]) is the arrival point, not
+        # another junction to preempt through — only the hops in between
+        # need signal preemption.
+        for i, jid in enumerate(route[:-1]):
+            agent = self.agents.get(jid)
+            if not agent:
+                continue
+            phase = self._phase_towards(jid, route[i + 1])
+            if not phase:
+                continue
+
+            already_triggered = jid in self.ambulance["triggered_junctions"]
+            already_cleared = jid in self.ambulance["cleared_junctions"]
+
+            if not already_triggered and not already_cleared:
+                queue_len = agent.local_obs.get(phase, {}).get("queue_length", 0)
+                if ambulance.should_trigger(eta_map[jid], self.EMERGENCY_LEAD_TIME_S, queue_len, self.DISCHARGE_HEADWAY_S):
+                    agent.set_emergency(phase)
+                    self.ambulance["triggered_junctions"].append(jid)
+
+            elif already_triggered and not already_cleared:
+                junction_pos_m = i * link_len
+                if prog >= junction_pos_m + self.AMBULANCE_CLEAR_MARGIN_M:
+                    agent.set_emergency(None)   # triggers that agent's recovery phase (Feature 11)
+                    self.ambulance["cleared_junctions"].append(jid)
+
+        if prog >= total_links * link_len + self.AMBULANCE_CLEAR_MARGIN_M:
             self.ambulance["active"] = False
             self.ambulance["progress_m"] = 0.0
-            for agent in self.agents.values():
-                agent.set_emergency(None)
-
-    def dispatch_ambulance(self):
-        self.ambulance["active"] = True
-        self.ambulance["progress_m"] = 0.0
-        self.ambulance["current_road"] = "road_VW1_J1"
-        self.ambulance["road_dist"] = 0.0
-        self.agents["J1"].set_emergency("EW")
-        self.agents["J3"].set_emergency("EW")
+            for jid in route[:-1]:
+                if jid in self.agents and jid not in self.ambulance["cleared_junctions"]:
+                    self.agents[jid].set_emergency(None)
+                    self.ambulance["cleared_junctions"].append(jid)
 
     def set_incident(self, junction_id: str, road_id: str, incident_type: str, active: bool = True):
         if active:
