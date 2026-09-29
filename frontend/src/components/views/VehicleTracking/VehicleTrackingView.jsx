@@ -138,7 +138,7 @@ export default function VehicleTrackingView({ onSwitchToTraffic, onLogout }) {
               <div className="vt-telemetry-strip">
                 <div className="vt-tele-item">
                   <span className="vt-tele-lbl">PROJECT ID</span>
-                  <span className="vt-tele-val text-sky">VeloCiTI</span>
+                  <span className="vt-tele-val text-sky">VeROCiTI</span>
                 </div>
                 <div className="vt-tele-item">
                   <span className="vt-tele-lbl">BACKBONE MODE</span>

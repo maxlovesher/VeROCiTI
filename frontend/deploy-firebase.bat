@@ -1,8 +1,8 @@
 @echo off
-title VeloCiTI - Firebase Hosting Deployer
+title VeROCiTI - Firebase Hosting Deployer
 color 0a
 echo ================================================================
-echo            VELOCITI - DEPLOY TO FIREBASE HOSTING
+echo            VEROCITI - DEPLOY TO FIREBASE HOSTING
 echo ================================================================
 echo.
 
@@ -18,7 +18,7 @@ call npm run build
 echo.
 echo [2/3] Connecting to Firebase account...
 echo A browser window will open. Click "Allow" with your Google account
-echo (the one you have open in Chrome with "VeloCiTI").
+echo (the one you have open in Chrome with "VeROCiTI").
 echo.
 call firebase login --reauth
 

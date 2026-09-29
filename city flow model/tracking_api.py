@@ -2,7 +2,7 @@
 tracking_api.py - Vehicle Tracking & Central Firebase Integration Bridge
 ========================================================================
 Exposes citywide multi-camera ANPR tracking endpoints, RTO Vahan lookups,
-and central Firebase Firestore synchronization directly on the VeloCiTI server.
+and central Firebase Firestore synchronization directly on the VeROCiTI server.
 """
 
 import os
@@ -436,7 +436,7 @@ def register_tracking_routes(app):
                 "success": False,
                 "error": err_msg,
                 "colab_gpu_required": True,
-                "hint": "Start colab_velociti_gpu.py in Google Colab and paste the generated Cloudflare URL."
+                "hint": "Start colab_verociti_gpu.py in Google Colab and paste the generated Cloudflare URL."
             }), 503
 
         # Decode frame using pure OpenCV only if needed for annotation (lightweight, ~10MB RAM)

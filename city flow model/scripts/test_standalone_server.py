@@ -24,7 +24,7 @@ PROTOTYPE_DIR = os.path.join(os.path.dirname(SERVER_DIR), "prototype")
 sys.path.insert(0, SERVER_DIR)
 sys.path.append(PROTOTYPE_DIR)
 
-_TMP = tempfile.mkdtemp(prefix="velociti_test_")
+_TMP = tempfile.mkdtemp(prefix="verociti_test_")
 import database  # noqa: E402
 database.DB_PATH = os.path.join(_TMP, "traffic.db")
 

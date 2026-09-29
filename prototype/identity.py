@@ -28,7 +28,7 @@ from typing import Optional
 # (with a clearly weaker guarantee) in a dev/demo environment that hasn't
 # set one — callers that care about real privacy guarantees should set
 # IDENTITY_HASH_SECRET explicitly.
-_DEFAULT_SECRET = "velociti-dev-only-change-me"
+_DEFAULT_SECRET = "verociti-dev-only-change-me"
 HASH_ID_PREFIX = "HID_"
 
 

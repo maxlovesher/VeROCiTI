@@ -1,5 +1,5 @@
 # ==============================================================================
-# VeloCITI AI GPU Backend - Single-Cell Google Colab Server
+# VeROCiTI AI GPU Backend - Single-Cell Google Colab Server
 # Multi-Frame CCTV Keyframe Seeking (Sub-2s) & Instant ANPR on NVIDIA CUDA GPU
 # ==============================================================================
 
@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-app = FastAPI(title="VeloCITI AI GPU Engine", version="2.0.0")
+app = FastAPI(title="VeROCiTI AI GPU Engine", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,7 +35,7 @@ app.add_middleware(
 )
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"🔥 [VeloCITI AI] Initializing on Device: {DEVICE}")
+print(f"🔥 [VeROCiTI AI] Initializing on Device: {DEVICE}")
 
 # Initialize YOLOv8 vehicle detection model
 print("⚡ Loading YOLOv8n vehicle detector...")
@@ -249,7 +249,7 @@ def draw_plate_annotation(frame: np.ndarray, plate: str, plate_bbox: Optional[Li
 
 @app.get("/")
 def home():
-    return {"status": "online", "device": DEVICE, "service": "VeloCITI AI Engine"}
+    return {"status": "online", "device": DEVICE, "service": "VeROCiTI AI Engine"}
 
 @app.post("/predict_image")
 async def predict_image(file: UploadFile = File(...)):
@@ -371,7 +371,7 @@ server_thread = threading.Thread(target=run_uvicorn, daemon=True)
 server_thread.start()
 
 # Wait for local server
-print("⏳ Initializing local VeloCITI server on port 8000...")
+print("⏳ Initializing local VeROCiTI server on port 8000...")
 server_ready = False
 for _ in range(30):
     try:
@@ -385,7 +385,7 @@ for _ in range(30):
 if not server_ready:
     print("❌ Server failed to start locally on port 8000")
 else:
-    print("✅ Local VeloCITI server is UP and responding!")
+    print("✅ Local VeROCiTI server is UP and responding!")
 
 # Setup cloudflared tunnel
 if not os.path.exists("/usr/local/bin/cloudflared"):
@@ -408,7 +408,7 @@ for _ in range(60):
             pass
 
 print("\n" + "=" * 65)
-print(f"🚀 VeloCITI AI Engine is LIVE on NVIDIA GPU ({DEVICE})!")
+print(f"🚀 VeROCiTI AI Engine is LIVE on NVIDIA GPU ({DEVICE})!")
 print(f"🔗 Cloudflare Tunnel URL: {tunnel_url}")
 print("=" * 65 + "\n")
 

@@ -67,7 +67,7 @@ export default function EmergencyCorridor({ intersections, corridor, onStartCorr
             <i className={`fas ${vehicleType === "ambulance" ? "fa-ambulance" : vehicleType === "fire" ? "fa-fire-extinguisher" : "fa-shield-alt"}`} />
           </div>
           <div>
-            <div className="em-title">VeloCiTI Dynamic Green Corridor</div>
+            <div className="em-title">VeROCiTI Dynamic Green Corridor</div>
             <div className="em-sub">Autonomous AI Signal Pre-emption & Smartphone-Based Fast Route Engine</div>
           </div>
         </div>

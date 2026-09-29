@@ -17,8 +17,8 @@ export default function Sidebar({ currentView, onNav, time, date, stats }) {
   return (
     <aside className="sidebar">
       <div className="sb-logo">
-        <img className="sb-logo-img" src="/velociti-logo.jpg" alt="VeloCiTI logo" />
-        <span className="sb-logo-name">Velo<span>CiTI</span></span>
+        <img className="sb-logo-img" src="/verociti-logo.jpg" alt="VeROCiTI logo" />
+        <span className="sb-logo-name">VeRO<span>CiTI</span></span>
       </div>
 
       <div className="sb-status">

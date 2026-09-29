@@ -1,15 +1,15 @@
 @echo off
-title VeloCiTI Full-Stack Launcher
+title VeROCiTI Full-Stack Launcher
 color 0b
 echo ================================================================
-echo           VELOCITI - VEHICLE LOCATION AND CITY TRAFFIC INTELLIGENCE
+echo           VEROCITI - VEHICLE LOCATION AND CITY TRAFFIC INTELLIGENCE
 echo ================================================================
 echo.
 echo [1/2] Launching CityFlow Multi-Agent Python Server (Port 5000)...
 start "CityFlow Backend Server" cmd /k "%~dp0start-backend.bat"
 
-echo [2/2] Launching VeloCiTI React Dashboard (Port 5173)...
-start "VeloCiTI React Vite" cmd /k "%~dp0start-frontend.bat"
+echo [2/2] Launching VeROCiTI React Dashboard (Port 5173)...
+start "VeROCiTI React Vite" cmd /k "%~dp0start-frontend.bat"
 
 echo.
 echo ================================================================

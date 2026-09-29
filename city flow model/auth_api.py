@@ -16,8 +16,8 @@ import time
 from flask import jsonify, request
 
 DEMO_ACCOUNT = {
-    "email": "demo@velociti.dev",
-    "password": "velociti-demo",
+    "email": "demo@verociti.dev",
+    "password": "verociti-demo",
     "name": "Demo Operator",
     "role": "System Operator",
     "badge": "",

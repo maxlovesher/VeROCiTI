@@ -161,7 +161,7 @@ $$\text{Priority}_{\text{boost}} = \min\left(0.6, \frac{\text{Wait Time} - T_{\t
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/maxlovesher/VeloCiTI
+git clone https://github.com/maxlovesher/VeROCiTI
 cd City-Flow-
 ```
 

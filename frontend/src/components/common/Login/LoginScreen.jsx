@@ -42,12 +42,12 @@ export default function LoginScreen({ onLoginSuccess }) {
       <div className="login-card">
         {/* Top Emblem & Header */}
         <div className="login-header">
-          <img className="brand-logo" src="/velociti-logo.jpg" alt="VeloCiTI logo" width="88" height="88" style={{ marginBottom: 14 }} />
+          <img className="brand-logo" src="/verociti-logo.jpg" alt="VeROCiTI logo" width="88" height="88" style={{ marginBottom: 14 }} />
           <div className="login-badge-pill">
             <span className="live-dot" />
             <span>SECURE RESTRICTED TERMINAL</span>
           </div>
-          <h1 className="login-title">VeloCiTI Command HQ</h1>
+          <h1 className="login-title">VeROCiTI Command HQ</h1>
           <p className="login-subtitle">
             Smart Urban Mobility & AI-Driven Green Corridor Platform
           </p>

@@ -22,7 +22,7 @@ class ErrorBoundary extends React.Component {
           color: "#f4f2ea", fontFamily: "Inter, monospace", gap: "16px", padding: "32px"
         }}>
           <div style={{ fontSize: "2.5rem" }}>⚠️</div>
-          <div style={{ fontSize: "1.2rem", fontWeight: 700, color: "#e5534b" }}>VeloCiTI failed to load</div>
+          <div style={{ fontSize: "1.2rem", fontWeight: 700, color: "#e5534b" }}>VeROCiTI failed to load</div>
           <div style={{ fontSize: "0.85rem", color: "#b5b1a4", maxWidth: "600px", textAlign: "center" }}>
             {String(this.state.error?.message || this.state.error)}
           </div>

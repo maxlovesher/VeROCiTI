@@ -451,7 +451,7 @@ export default function LiveWebcamView() {
             <div className="lw-modal-header">
               <h3>
                 <i className="fas fa-microchip" style={{ color: "#38bdf8" }} />
-                VeloCiTI Production Architecture & Evaluation Note
+                VeROCiTI Production Architecture & Evaluation Note
               </h3>
               <button className="lw-modal-close" onClick={() => setShowJudgePopup(false)}>
                 &times;
@@ -459,7 +459,7 @@ export default function LiveWebcamView() {
             </div>
             <div className="lw-modal-content">
               <p>
-                <strong>Welcome Evaluators!</strong> The VeloCiTI traffic intelligence platform integrates:
+                <strong>Welcome Evaluators!</strong> The VeROCiTI traffic intelligence platform integrates:
               </p>
               <ul>
                 <li><strong>YOLOv8</strong> deep multi-class vehicle detection</li>

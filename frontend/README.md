@@ -1,4 +1,4 @@
-﻿# 🚦 VeloCiTI — Smart City Traffic HQ & Emergency Green Corridor System
+﻿# 🚦 VeROCiTI — Smart City Traffic HQ & Emergency Green Corridor System
 
 <div align="center">
 
@@ -23,9 +23,9 @@ In rapidly expanding metropolitan cities, traditional timer-based traffic light 
 1. **Static Cycle Inefficiency:** Fixed signal timing fails to adapt to real-time lane density, causing unnecessary gridlocks, wasted fuel, and carbon emissions.
 2. **Emergency Vehicle Delays:** Ambulances and fire engines get trapped in urban choke points, adding life-threatening delays during the critical **"Golden Hour"** of medical emergencies.
 
-## 💡 The VeloCiTI Solution
+## 💡 The VeROCiTI Solution
 
-**VeloCiTI** is a centralized Traffic Command & Control Headquarters platform that combines:
+**VeROCiTI** is a centralized Traffic Command & Control Headquarters platform that combines:
 * **Autonomous Adaptive Signal Optimization:** Dynamically redistributes green light durations based on live vehicle queue load and clearance velocity.
 * **Sub-Meter Emergency Green Wave Corridors:** Integrates with **OSRM (Open Source Routing Machine)** to calculate exact street-level road curves and automatically pre-empts traffic lights ahead of moving emergency units.
 * **Edge Computer Vision Surveillance:** Employs **TensorFlow.js deep learning** on live CCTV feeds for zero-false-positive vehicle detection, speed radar tracking, and queue estimation.
@@ -60,9 +60,9 @@ In rapidly expanding metropolitan cities, traditional timer-based traffic light 
 
 ## 📱 Mobile App Suite (Field Operations)
 
-VeloCiTI includes complete UI designs for on-ground field personnel:
+VeROCiTI includes complete UI designs for on-ground field personnel:
 
-### 👮 A. VeloCiTI Officer HQ (Traffic Police App)
+### 👮 A. VeROCiTI Officer HQ (Traffic Police App)
 | 1. Officer Login & Post Setup | 2. Field Junction Control | 3. Adjacent Traffic Topology | 4. Field CCTV & Heatmap |
 |:---:|:---:|:---:|:---:|
 | <img src="docs/mobile-designs/01_officer_mobile_login.jpg" width="200" /> | <img src="docs/mobile-designs/02_officer_junction_control.jpg" width="200" /> | <img src="docs/mobile-designs/03_officer_adjacent_traffic.jpg" width="200" /> | <img src="docs/mobile-designs/04_officer_mobile_cctv_map.jpg" width="200" /> |
@@ -73,7 +73,7 @@ VeloCiTI includes complete UI designs for on-ground field personnel:
 
 ---
 
-### 🚑 B. VeloCiTI ResQ (Emergency Driver App)
+### 🚑 B. VeROCiTI ResQ (Emergency Driver App)
 | 1. Paramedic Unit Login | 2. Route & Corridor Setup | 3. Live In-Transit Navigation |
 |:---:|:---:|:---:|
 | <img src="docs/mobile-designs/05_ambulance_mobile_login.jpg" width="200" /> | <img src="docs/mobile-designs/06_ambulance_route_dispatch.jpg" width="200" /> | <img src="docs/mobile-designs/07_ambulance_live_navigation.jpg" width="200" /> |
@@ -99,7 +99,7 @@ flowchart TD
         SignalOpt["Autonomous Dynamic Green Wave Optimizer"]
     end
 
-    subgraph HQ_Dashboard ["VeloCiTI Traffic HQ Platform"]
+    subgraph HQ_Dashboard ["VeROCiTI Traffic HQ Platform"]
         Matrix["100-Node City Grid Overview"]
         GISMap["Live GIS Road Heatmap (Leaflet)"]
         CorridorHUD["Emergency Green Corridor Relay"]
@@ -149,7 +149,7 @@ flowchart TD
 
 ### 1. Clone Repository
 ```bash
-git clone https://github.com/maxlovesher/VeloCiTI
+git clone https://github.com/maxlovesher/VeROCiTI
 cd SIH-Dashboard-
 ```
 
@@ -225,5 +225,5 @@ Distributed under the **MIT License**. See `LICENSE` for more information.
 ---
 
 <div align="center">
-  <sub>Built with ❤️ for Smart India Hackathon. VeloCiTI Technologies.</sub>
+  <sub>Built with ❤️ for Smart India Hackathon. VeROCiTI Technologies.</sub>
 </div>

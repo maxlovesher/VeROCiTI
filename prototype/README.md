@@ -78,7 +78,7 @@ An enterprise-grade, high-throughput **Automatic Number Plate Recognition (ANPR)
 ### 1. Installation
 Clone the repository and install required dependencies:
 ```bash
-git clone https://github.com/maxlovesher/VeloCiTI
+git clone https://github.com/maxlovesher/VeROCiTI
 cd SIH-2026
 
 python -m venv .venv

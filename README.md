@@ -1,6 +1,6 @@
-<p align="center"><img src="frontend/public/velociti-logo.jpg" width="160" alt="VeloCiTI logo"></p>
+<p align="center"><img src="frontend/public/verociti-logo.jpg" width="160" alt="VeROCiTI logo"></p>
 
-# VeloCiTI
+# VeROCiTI
 
 **Vehicle Location and City Traffic Intelligence.** An AI traffic-management platform for emergency green corridors, adaptive signal control and vehicle intelligence, built as a Smart India Hackathon prototype for Bhubaneswar.
 
@@ -49,7 +49,7 @@ Sign-in is verified by the backend. Accounts come from the `TEAM_MEMBERS` enviro
 python "city flow model/scripts/make_team_members.py" you@example.com:your-password
 ```
 
-Without `TEAM_MEMBERS`, only the public demo account `demo@velociti.dev` / `velociti-demo` can sign in. Repeated failed attempts from one client are temporarily locked out.
+Without `TEAM_MEMBERS`, only the public demo account `demo@verociti.dev` / `verociti-demo` can sign in. Repeated failed attempts from one client are temporarily locked out.
 
 ### One-time model download
 

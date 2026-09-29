@@ -33,7 +33,7 @@ import {
 import "./App.css";
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState(() => getCurrentUser() || { email: "admin@velociti.dev", name: "Operator", role: "admin" });
+  const [currentUser, setCurrentUser] = useState(() => getCurrentUser() || { email: "admin@verociti.dev", name: "Operator", role: "admin" });
   const [activePortal, setActivePortal] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     const p = params.get("portal");

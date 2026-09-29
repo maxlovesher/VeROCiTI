@@ -1,4 +1,4 @@
-# VeloCiTI — Setup & Requirements Guide
+# VeROCiTI — Setup & Requirements Guide
 
 ## ✅ System Requirements
 
@@ -28,7 +28,7 @@ npm --version
 
 ### Step 2: Clone the Repository
 ```bash
-git clone https://github.com/maxlovesher/VeloCiTI
+git clone https://github.com/maxlovesher/VeROCiTI
 cd SIH-Dashboard-
 ```
 

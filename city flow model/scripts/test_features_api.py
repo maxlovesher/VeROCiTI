@@ -112,7 +112,7 @@ def build_fixture():
 class TestInsightsApi(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls._tmp = tempfile.mkdtemp(prefix="velociti_insights_")
+        cls._tmp = tempfile.mkdtemp(prefix="verociti_insights_")
         db.DB_PATH = os.path.join(cls._tmp, "traffic.db")
         db.init_db()
         build_fixture()

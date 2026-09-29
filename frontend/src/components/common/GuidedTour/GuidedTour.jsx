@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import "./GuidedTour.css";
 
-const TOUR_STORAGE_KEY_PREFIX = "velociti_spotlight_tour_v3_";
+const TOUR_STORAGE_KEY_PREFIX = "verociti_spotlight_tour_v3_";
 
 // Helper to safely access tracking iframe content window and document
 function getTrackingIframe() {
@@ -26,10 +26,10 @@ const TRAFFIC_TOUR_STEPS = [
     targetSelector: ".sb-logo",
     buttonSelector: ".sb-logo",
     viewRequired: "overview",
-    triggerButton: "[ 🛡️ VeloCiTI Hub ]",
+    triggerButton: "[ 🛡️ VeROCiTI Hub ]",
     triggerLocation: "Left Sidebar Header",
     cardPosition: "top-left",
-    title: "VeloCiTI Command Hub",
+    title: "VeROCiTI Command Hub",
     badge: "System Core",
     icon: "fa-shield-halved",
     desc: "Autonomous Traffic Management & Multi-Agent CityFlow Control Engine designed for Bhubaneswar Metropolitan Area.",

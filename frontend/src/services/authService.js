@@ -1,6 +1,6 @@
-// VeloCiTI Team Authentication & Role-Based Access Control
+// VeROCiTI Team Authentication & Role-Based Access Control
 
-const AUTH_STORAGE_KEY = "velociti_auth_session";
+const AUTH_STORAGE_KEY = "verociti_auth_session";
 
 /**
  * Sign in. Credentials are verified by the backend (POST /api/auth/login); the browser only keeps the

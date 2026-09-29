@@ -1109,7 +1109,7 @@ export default function MapView({ intersections, onSelectIntersection, corridor,
               <div className="hud-top-row">
                 <span className="hud-title">
                   <i className={`fas ${corridor.vehicleType === "fire" ? "fa-fire-extinguisher" : corridor.vehicleType === "vip" ? "fa-shield-alt" : "fa-ambulance"}`} />
-                  VELOCITI DYNAMIC GREEN CORRIDOR ACTIVE
+                  VEROCITI DYNAMIC GREEN CORRIDOR ACTIVE
                 </span>
                 <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                   <span className="hud-eta">{distanceKm} km Route</span>

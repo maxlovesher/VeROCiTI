@@ -1798,7 +1798,7 @@ def register_webcam_routes(app, *, db, al, get_yolo_model, prototype_dir, snapsh
                 _last_email_sent_time = now_ts
 
             msg = (
-                f"🚨 VeloCiTI Alert: Evaluation Testing Detected!\n\n"
+                f"🚨 VeROCiTI Alert: Evaluation Testing Detected!\n\n"
                 f"A visitor / judge opened: {trigger_source}\n"
                 f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"Client IP: {remote_ip}\n"
@@ -1814,7 +1814,7 @@ def register_webcam_routes(app, *, db, al, get_yolo_model, prototype_dir, snapsh
                 req = urllib.request.Request(
                     "https://ntfy.sh/velociti_judge_alerts_777",
                     data=msg.encode("utf-8"),
-                    headers={"Title": "VeloCiTI: Judge/Visitor Testing CCTV", "Priority": "urgent", "Tags": "rotating_light,car"}
+                    headers={"Title": "VeROCiTI: Judge/Visitor Testing CCTV", "Priority": "urgent", "Tags": "rotating_light,car"}
                 )
                 urllib.request.urlopen(req, timeout=4)
             except Exception:
@@ -1825,9 +1825,9 @@ def register_webcam_routes(app, *, db, al, get_yolo_model, prototype_dir, snapsh
                 import urllib.request
                 import json
                 relay_payload = json.dumps({
-                    "name": "VeloCiTI Live CCTV Monitor",
+                    "name": "VeROCiTI Live CCTV Monitor",
                     "email": "chinmayabiswal777@gmail.com",
-                    "_subject": "🚨 [VeloCiTI Alert] Visitor / Judge is testing Live CCTV!",
+                    "_subject": "🚨 [VeROCiTI Alert] Visitor / Judge is testing Live CCTV!",
                     "message": msg,
                     "_template": "table",
                     "_captcha": "false"

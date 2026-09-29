@@ -1,4 +1,4 @@
-// VeloCiTI Live Firebase Real-Time Synchronization Engine
+// VeROCiTI Live Firebase Real-Time Synchronization Engine
 // Configured with Firebase Project: your-firebase-project
 
 import { initializeApp } from "firebase/app";

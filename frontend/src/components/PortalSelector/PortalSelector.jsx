@@ -12,9 +12,9 @@ export default function PortalSelector({ onSelectPortal, currentUser, onLogout }
       {/* Top Header */}
       <header className="portal-header">
         <div className="portal-brand">
-          <img className="brand-logo" src="/velociti-logo.jpg" alt="VeloCiTI logo" width="46" height="46" />
+          <img className="brand-logo" src="/verociti-logo.jpg" alt="VeROCiTI logo" width="46" height="46" />
           <div>
-            <h1 className="portal-title">VeloCiTI Command Nexus</h1>
+            <h1 className="portal-title">VeROCiTI Command Nexus</h1>
             <p className="portal-subtitle">Bhubaneswar Smart City Integrated Traffic & Security Grid</p>
           </div>
         </div>
@@ -35,7 +35,7 @@ export default function PortalSelector({ onSelectPortal, currentUser, onLogout }
         <div className="portal-intro">
           <div className="portal-pill-badge">
             <span className="portal-pulse-dot" />
-            CENTRAL FIREBASE CLOUD CONNECTED • VELOCITI
+            CENTRAL FIREBASE CLOUD CONNECTED • VEROCITI
           </div>
           <h2 className="portal-headline">Select Operational Command Module</h2>
           <p className="portal-lead">
@@ -56,7 +56,7 @@ export default function PortalSelector({ onSelectPortal, currentUser, onLogout }
             </div>
 
             <div className="portal-card-body">
-              <h3 className="portal-card-title">VeloCiTI AI Urban Traffic Management</h3>
+              <h3 className="portal-card-title">VeROCiTI AI Urban Traffic Management</h3>
               <p className="portal-card-desc">
                 Real-time adaptive signal control across 100 Bhubaneswar junctions, emergency green corridors,
                 incident management, and CityFlow multi-agent microsimulation.
