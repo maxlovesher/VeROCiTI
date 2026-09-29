@@ -1,0 +1,105 @@
+.sai-view { padding: 16px; display: flex; flex-direction: column; gap: 12px; height: 100%; overflow-y: auto; }
+
+.sai-offline { display: flex; gap: 12px; align-items: flex-start; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text2); font-size: 0.8rem; }
+.sai-offline i { font-size: 1.2rem; color: var(--amber); margin-top: 2px; }
+.sai-offline div { display: flex; flex-direction: column; gap: 4px; }
+.sai-offline strong { color: var(--text); }
+.sai-offline code { background: var(--surface2); padding: 1px 5px; border-radius: 4px; }
+
+.sai-error { padding: 8px 12px; background: var(--red-dim); color: var(--red); border: 1px solid rgba(229,83,75,0.3); border-radius: var(--radius-sm); font-size: 0.75rem; }
+
+.sai-top { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.sai-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.sai-card.alert { border-color: rgba(229,83,75,0.45); }
+.sai-title { font-size: 0.72rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; display: flex; align-items: center; gap: 6px; }
+.sai-hint { font-size: 0.66rem; color: var(--text3); line-height: 1.4; }
+.sai-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.sai-ladder { display: flex; flex-direction: column; gap: 4px; }
+.sai-rung { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text2); transition: var(--transition); }
+.sai-rung:hover:not(:disabled) { border-color: var(--text3); color: var(--text); }
+.sai-rung.active { background: var(--blue-dim); border-color: rgba(217,119,87,0.4); color: var(--blue); }
+.sai-rung-label { font-size: 0.74rem; font-weight: 600; }
+.sai-rung-desc { font-size: 0.62rem; color: var(--text3); }
+
+.sai-toggle { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.72rem; color: var(--text2); cursor: pointer; }
+.sai-toggle .sai-hint { flex-basis: 100%; padding-left: 20px; }
+
+.sai-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; font-size: 0.62rem; font-weight: 700; letter-spacing: 0.03em; white-space: nowrap; }
+.sai-pill.green { background: var(--green-dim); color: var(--green); }
+.sai-pill.amber { background: var(--amber-dim); color: var(--amber); }
+.sai-pill.red { background: var(--red-dim); color: var(--red); }
+.sai-pill.muted { background: var(--surface2); color: var(--text2); }
+
+.sai-btn { padding: 5px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface2); color: var(--text); font-size: 0.72rem; font-weight: 600; transition: var(--transition); }
+.sai-btn:hover:not(:disabled) { border-color: var(--text3); }
+.sai-btn.primary { background: var(--blue-dim); color: var(--blue); border-color: rgba(217,119,87,0.35); }
+.sai-btn.danger { background: var(--red-dim); color: var(--red); border-color: rgba(229,83,75,0.35); align-self: flex-start; }
+.sai-btn:disabled, .sai-rung:disabled, .sai-mini-btn:disabled { opacity: 0.55; cursor: default; }
+.sai-select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 5px 8px; font-size: 0.72rem; }
+
+.sai-amb-status { font-size: 0.72rem; color: var(--text2); line-height: 1.45; }
+.sai-amb-status strong { color: var(--text); }
+.sai-route { display: flex; gap: 6px; flex-wrap: wrap; }
+.sai-stop { display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; border-radius: var(--radius-sm); background: var(--bg); border: 1px solid var(--border); min-width: 72px; }
+.sai-stop-id { font-size: 0.78rem; font-weight: 700; color: var(--text); }
+.sai-stop-state { font-size: 0.6rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.04em; }
+.sai-stop.preempted { border-color: rgba(99,163,117,0.5); }
+.sai-stop.preempted .sai-stop-state { color: var(--green); }
+.sai-stop.cleared { opacity: 0.6; }
+.sai-stop.hospital .sai-stop-state { color: var(--blue); }
+
+.sai-bars { display: flex; flex-direction: column; gap: 6px; }
+.sai-bar-row { display: grid; grid-template-columns: 70px 1fr 44px; align-items: center; gap: 8px; font-size: 0.7rem; color: var(--text2); }
+.sai-bar-row strong { color: var(--text); text-align: right; }
+.sai-bar { height: 8px; background: var(--bg); border-radius: 99px; overflow: hidden; }
+.sai-bar .fill { height: 100%; border-radius: 99px; transition: width 0.4s ease; }
+.sai-bar .fill.green { background: var(--green); }
+.sai-bar .fill.muted { background: var(--text3); }
+.sai-big { display: flex; flex-direction: column; gap: 2px; }
+.sai-big span { font-size: 1.3rem; font-weight: 700; }
+.sai-big span.green { color: var(--green); }
+.sai-big span.red { color: var(--red); }
+.sai-big small { font-size: 0.66rem; color: var(--text2); }
+
+.sai-wave { display: flex; flex-direction: column; gap: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.sai-wave:last-child { border-bottom: 0; padding-bottom: 0; }
+.sai-wave-chain { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.sai-wave-node { display: inline-flex; flex-direction: column; align-items: center; padding: 4px 8px; background: var(--green-dim); color: var(--green); border-radius: var(--radius-sm); font-size: 0.74rem; font-weight: 700; }
+.sai-wave-node small { font-size: 0.58rem; font-weight: 500; color: var(--text2); }
+
+.sai-junctions { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.sai-jhead { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sai-jid { font-size: 0.95rem; font-weight: 700; color: var(--text); margin-right: 2px; }
+.sai-jtime { font-size: 0.62rem; color: var(--text3); margin-left: auto; }
+.sai-reason { font-size: 0.68rem; color: var(--text2); line-height: 1.4; background: var(--bg); border-radius: var(--radius-sm); padding: 6px 8px; min-height: 2.4em; }
+
+.sai-approach { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg); }
+.sai-approach.green { border-color: rgba(99,163,117,0.4); }
+.sai-approach-head { display: flex; align-items: center; justify-content: space-between; }
+.sai-approach-name { font-size: 0.72rem; font-weight: 600; color: var(--text); }
+.sai-light { width: 9px; height: 9px; border-radius: 50%; }
+.sai-light.green { background: var(--green); }
+.sai-light.red { background: var(--red); }
+.sai-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.sai-metrics > div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sai-k { font-size: 0.58rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.04em; }
+.sai-v { font-size: 0.7rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sai-v em { font-style: normal; color: var(--text3); }
+.sai-v em.heavy { color: var(--amber); }
+.trend-RISING { color: var(--red); }
+.trend-FALLING { color: var(--green); }
+.trend-STABLE { color: var(--text3); }
+.sai-advisory { font-size: 0.64rem; color: var(--text2); }
+.sai-advisory i { color: var(--text3); margin-right: 3px; }
+.sai-tags { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+.sai-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 99px; font-size: 0.6rem; font-weight: 600; }
+.sai-tag.bus { background: var(--blue-dim); color: var(--blue); }
+.sai-tag.ped { background: var(--amber-dim); color: var(--amber); }
+.sai-mini-btn { margin-left: auto; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--border); background: transparent; color: var(--text2); font-size: 0.6rem; transition: var(--transition); }
+.sai-mini-btn:hover:not(:disabled) { color: var(--text); border-color: var(--text3); }
+
+@media (max-width: 640px) {
+  .sai-view { padding: 10px; }
+  .sai-junctions { grid-template-columns: 1fr; }
+}

@@ -13,6 +13,8 @@ import Incidents from "./components/views/Incidents/Incidents";
 import LiveGrid from "./components/views/LiveGrid/LiveGrid";
 import CityFlowView from "./components/views/CityFlow/CityFlowView";
 import LiveWebcamView from "./components/views/LiveWebcam/LiveWebcamView";
+import SignalAI from "./components/views/SignalAI/SignalAI";
+import Insights from "./components/views/Insights/Insights";
 import LoadingScreen from "./components/common/LoadingScreen/LoadingScreen";
 import LoginScreen from "./components/common/Login/LoginScreen";
 import PortalSelector from "./components/PortalSelector/PortalSelector";
@@ -56,7 +58,7 @@ export default function App() {
   const { time, date } = useClock();
 
   // Live simulation hook — polls CityFlow backend when live grid or cityflow view is active
-  const liveActive = view === "livegrid" || view === "cityflow" || view === "livedetail";
+  const liveActive = view === "livegrid" || view === "cityflow" || view === "livedetail" || view === "signalai";
   const {
     liveIntersections, liveStats, isConnected, isRunning, rawState,
     startSim, pauseSim, resetSim
@@ -371,6 +373,8 @@ export default function App() {
             />
           )}
           {view === "webcam" && <LiveWebcamView />}
+          {view === "signalai" && <SignalAI rawState={rawState} isConnected={isConnected} />}
+          {view === "insights" && <Insights />}
         </div>
       </div>
       <GuidedTour

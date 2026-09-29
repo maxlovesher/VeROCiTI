@@ -17,7 +17,8 @@ export default function CityFlowView({
   const step = rawState?.step ?? 0;
   const totalVehicles = rawState?.total_vehicles ?? 42;
   const avgSpeed = rawState?.avg_speed ?? 28;
-  const networkDensity = rawState?.network_density ? Math.round(rawState.network_density * 100) : 34;
+  // network_density is already a percentage of network capacity.
+  const networkDensity = rawState?.network_density != null ? Math.round(rawState.network_density) : 34;
 
   return (
     <div className="cityflow-view">

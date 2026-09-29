@@ -7,6 +7,8 @@ const VIEW_TITLES = {
   analytics: { title:"Traffic Analytics",           sub:"Fleet distribution & congestion forecasting" },
   incidents: { title:"Incidents & Operations",      sub:"AI real-time dispatch alerts & operations log" },
   detail:    { title:"Intersection Console",        sub:"" },
+  signalai:  { title:"Signal AI Controller",        sub:"Live multi-agent signal control, 5-junction CityFlow network" },
+  insights:  { title:"Network Insights",            sub:"Camera analytics, enforcement & privacy" },
 };
 
 export default function TopBar({ currentView, intersection, stats, currentUser, onLogout, onSwitchToTracking, onOpenHub }) {

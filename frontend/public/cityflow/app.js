@@ -1273,7 +1273,8 @@ const canvas = document.getElementById('simCanvas');
         miniAmbulance.dist = 0;
         miniAmbulance.current_road = 'road_VW1_J1';
         document.getElementById('corridor-banner').classList.toggle('active', miniAmbulance.active);
-        apiCall('/api/ambulance', {});
+        // Send the wanted state, not a toggle, so a server-side run that already finished can't flip back on.
+        apiCall('/api/ambulance', { active: miniAmbulance.active });
       }
     };
 

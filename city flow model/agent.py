@@ -190,11 +190,12 @@ class TrafficAgent:
                 v = lane_vehicles.get(lane_id, 0)
                 total_veh += v
                 waiting_veh += w
-                total_pcu += self._pcu_counts_for_lane(lane_id, v, vehicle_info_map)
+                lane_pcu = self._pcu_counts_for_lane(lane_id, v, vehicle_info_map)
+                total_pcu += lane_pcu
                 # No per-lane "which ids are waiting" call exists on the engine,
                 # so approximate weighted waiting by applying the lane's
                 # observed PCU/raw ratio to the raw waiting count.
-                lane_pcu_ratio = (total_pcu / v) if v else 1.0
+                lane_pcu_ratio = (lane_pcu / v) if v else 1.0
                 waiting_pcu += w * lane_pcu_ratio
 
             for v_data in vehicle_info_map.values():
@@ -238,7 +239,10 @@ class TrafficAgent:
             # Feature 6: short-term queue prediction (~5 min ahead).
             predictor = self.queue_predictors[phase_name]
             predictor.record(waiting_pcu)
-            predicted_queue_5min = predictor.predict(300.0)
+            # A straight-line fit through a queue that rises and falls with every
+            # signal cycle can overshoot badly 5 minutes out; a queue can't hold
+            # more than the approach's storage, so cap it there.
+            predicted_queue_5min = min(predictor.predict(300.0), total_cap)
 
             # Feature 8: green-light speed advisory for this approach's VMS.
             # Only meaningful while the phase is red (waiting for its own
