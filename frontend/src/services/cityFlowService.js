@@ -80,7 +80,8 @@ export function generateClientSimulatedState() {
     total_vehicles: 38 + Math.round(12 * Math.sin(step * 0.05)),
     avg_travel_time: +(16.4 + 2 * Math.sin(step * 0.04)).toFixed(1),
     avg_speed: +(8.2 + 1.2 * Math.cos(step * 0.05)).toFixed(1),
-    network_density: +((Object.values(agents).reduce((s, a) => s + a.overall_density, 0) / 5)).toFixed(2),
+    // Percent of network capacity, same unit as the Python server's network_density.
+    network_density: +((Object.values(agents).reduce((s, a) => s + a.overall_density, 0) / 5) * 100).toFixed(1),
     total_waiting: Object.values(agents).reduce((s, a) => s + a.total_queue, 0),
     agents,
     tl_phases,
@@ -114,6 +115,30 @@ export async function sendControl(cmd, extra = {}) {
 export function startSimulation() { return sendControl('start'); }
 export function pauseSimulation() { return sendControl('pause'); }
 export function resetSimulation() { return sendControl('reset'); }
+
+async function postJson(path, body) {
+  const res = await fetch(`${CITYFLOW_API}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || `CityFlow API error: ${res.status}`);
+  return data;
+}
+
+// Feature 11: hospital-aware ambulance corridor.
+export function dispatchAmbulance(origin = 'J1') { return postJson('/ambulance', { active: true, origin }); }
+export function standDownAmbulance() { return postJson('/ambulance', { active: false }); }
+
+// Feature 9: degradation ladder — pin a rung ("AUTO" releases it), or simulate a failed sensor feed.
+export function setControlMode(mode) { return postJson('/control_mode', { mode }); }
+export function setSensorFault(active) { return postJson('/sensor_fault', { active }); }
+
+// Feature 10: pedestrian push-button call to cross `phase`'s road at `junction`.
+export function setPedestrianCall(junction, phase, waiting = true) {
+  return postJson('/pedestrian', { junction, phase, waiting });
+}
 
 export function transformState(raw) {
   if (!raw || !raw.agents) return [];

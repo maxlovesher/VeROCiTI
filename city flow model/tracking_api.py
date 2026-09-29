@@ -10,6 +10,7 @@ import sys
 import json
 import time
 import random
+import string
 import threading
 from datetime import datetime
 from flask import jsonify, request, send_from_directory, Response, redirect
@@ -1218,6 +1219,32 @@ def _prewarm_ai_models():
     threading.Thread(target=_worker, daemon=True).start()
 
 
+_BACKGROUND_CARS = 80        # enough that each camera reports every minute or two (camera health times out at 5)
+_ROAD_DISTANCE_FACTOR = 1.3   # roads wind; the straight line between cameras is shorter than the drive
+
+
+def _random_plate():
+    return f"OD{random.randint(1, 35):02d}{''.join(random.choices(string.ascii_uppercase, k=2))}{random.randint(1000, 9999)}"
+
+
+def _camera_coords():
+    """Camera positions from the camera table — the same source the analytics measure distances with."""
+    return {
+        c["id"]: (c["lat"], c["lon"])
+        for c in db.get_all_cameras()
+        if c.get("lat") is not None and c.get("lon") is not None
+    }
+
+
+def _travel_seconds(coords, cam_from, cam_to, kmph):
+    """Drive time between two cameras at `kmph`, plus a little time lost at signals."""
+    a, b = coords.get(cam_from), coords.get(cam_to)
+    if not a or not b:
+        return random.uniform(90, 240)
+    km = an.haversine_km(a[0], a[1], b[0], b[1]) * _ROAD_DISTANCE_FACTOR
+    return km / max(5.0, kmph) * 3600.0 + random.uniform(0, 45)
+
+
 def _start_background_sync():
     """Starts a gentle background simulation advancing vehicles along cameras and updating Firebase."""
     global _sim_running, _sim_thread
@@ -1241,12 +1268,35 @@ def _start_background_sync():
             ["CAM_PATIA", "CAM_KIIT", "CAM_INFOCITY", "CAM_JAYADEV"],
         ]
 
+        # Each car's next sighting is scheduled from the real distance to its
+        # next camera and its travel speed, so section speeds, travel times and
+        # the plate-cloning check all see journeys a vehicle could actually make.
         active_cars = {
-            "OD05XX9999": {"type": "Car", "cat": "Private Vehicle", "viol": "STOLEN_VEHICLE_ALERT", "step": 0, "route": routes[0]},
-            "MH12DE1234": {"type": "Truck", "cat": "Commercial Goods", "viol": "WANTED_ROBBERY_CASE", "step": 0, "route": routes[1]},
-            "KA01AB1111": {"type": "Motorbike", "cat": "Two Wheeler", "viol": "UNPAID_CHALLANS_EXCEEDED", "step": 0, "route": routes[2]},
-            "OD02BA4455": {"type": "Car", "cat": "Private Vehicle", "viol": "NONE", "step": 0, "route": routes[3]},
+            "OD05XX9999": {"type": "Car", "cat": "Private Vehicle", "viol": "STOLEN_VEHICLE_ALERT", "route": routes[0], "kmph": (32, 55)},
+            "MH12DE1234": {"type": "Truck", "cat": "Commercial Goods", "viol": "WANTED_ROBBERY_CASE", "route": routes[1], "kmph": (28, 45)},
+            # The challan defaulter also rides fast enough to trip the section-speed check now and then.
+            "KA01AB1111": {"type": "Motorbike", "cat": "Two Wheeler", "viol": "UNPAID_CHALLANS_EXCEEDED", "route": routes[2], "kmph": (70, 95)},
+            "OD02BA4455": {"type": "Car", "cat": "Private Vehicle", "viol": "NONE", "route": routes[3], "kmph": (30, 50)},
         }
+        # Ordinary traffic, so every camera keeps reporting and the analytics have volume.
+        background_types = [
+            ("Car", "Private Vehicle"), ("Car", "Private Vehicle"), ("Car", "Private Vehicle"),
+            ("Motorbike", "Two Wheeler"), ("Motorbike", "Two Wheeler"),
+            ("Bus", "Public Transport"), ("Auto-rickshaw", "Commercial Passenger"),
+        ]
+        for _ in range(_BACKGROUND_CARS):
+            vtype, cat = random.choice(background_types)
+            active_cars[_random_plate()] = {
+                "type": vtype, "cat": cat, "viol": "NONE", "route": random.choice(routes), "kmph": (25, 50),
+            }
+        try:
+            coords = _camera_coords()
+        except Exception:
+            coords = {}
+        start = time.time()
+        for v in active_cars.values():
+            v["step"] = random.randrange(len(v["route"]))
+            v["due"] = start + random.uniform(0, 90)
 
         while _sim_running:
             try:
@@ -1261,36 +1311,41 @@ def _start_background_sync():
                                 "cat": "Private Vehicle",
                                 "viol": bl_item.get("reason", "BLACKLIST_FLAGGED"),
                                 "step": 0,
-                                "route": routes[random.randint(0, len(routes)-1)]
+                                "route": routes[random.randint(0, len(routes)-1)],
+                                "kmph": (30, 50),
+                                "due": time.time(),
                             }
                 except Exception:
                     pass
 
-                plate = random.choice(list(active_cars.keys()))
-                v = active_cars[plate]
-                route = v["route"]
-                step = v["step"]
-                cam_id = route[step % len(route)]
-                ts = datetime.now().isoformat(timespec="seconds")
-                spd = round(random.uniform(32, 60), 1)
-                conf = round(random.uniform(0.92, 0.99), 3)
+                now = time.time()
+                for plate, v in list(active_cars.items()):
+                    if v["due"] > now:
+                        continue
+                    route = v["route"]
+                    step = v["step"]
+                    cam_id = route[step % len(route)]
+                    ts = datetime.now().isoformat(timespec="seconds")
+                    spd = round(random.uniform(*v["kmph"]), 1)
+                    conf = round(random.uniform(0.92, 0.99), 3)
 
-                cam_meta = firebase_sync.CAMERAS_INFO.get(cam_id, {})
-                lat = cam_meta.get("lat", 20.2961) + random.uniform(-0.0002, 0.0002)
-                lon = cam_meta.get("lon", 85.8245) + random.uniform(-0.0002, 0.0002)
+                    cam_meta = firebase_sync.CAMERAS_INFO.get(cam_id, {})
+                    lat = cam_meta.get("lat", 20.2961) + random.uniform(-0.0002, 0.0002)
+                    lon = cam_meta.get("lon", 85.8245) + random.uniform(-0.0002, 0.0002)
 
-                db.insert_detection(
-                    plate=plate, camera_id=cam_id, timestamp=ts,
-                    confidence=conf, speed_kmph=spd, lat=lat, lon=lon,
-                    vehicle_type=v["type"], category=v["cat"], violation=v["viol"]
-                )
+                    db.insert_detection(
+                        plate=plate, camera_id=cam_id, timestamp=ts,
+                        confidence=conf, speed_kmph=spd, lat=lat, lon=lon,
+                        vehicle_type=v["type"], category=v["cat"], violation=v["viol"]
+                    )
 
-                al.check_detection(plate, cam_id, ts)
+                    al.check_detection(plate, cam_id, ts)
 
-                v["step"] = (step + 1) % len(route)
+                    v["step"] = (step + 1) % len(route)
+                    v["due"] = now + _travel_seconds(coords, cam_id, route[v["step"]], random.uniform(*v["kmph"]))
             except Exception:
                 pass
-            time.sleep(12)
+            time.sleep(3)
 
     _sim_thread = threading.Thread(target=sim_loop, daemon=True, name="VehicleTrackingSimulator")
     _sim_thread.start()

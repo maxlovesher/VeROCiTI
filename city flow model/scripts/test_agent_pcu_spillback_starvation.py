@@ -121,6 +121,32 @@ class TestPcuWeighting(unittest.TestCase):
         self.assertEqual(obs["NS"]["vehicle_count_pcu"], 3.0)
         self.assertEqual(obs["EW"]["density"], obs["NS"]["density"])
 
+    def test_waiting_pcu_uses_each_lane_own_ratio(self):
+        # Regression: the waiting-PCU estimate used the running total across
+        # the approach's roads, so every lane after the first was over-counted.
+        pcu.register_flow_types({0: "bus"})
+        try:
+            engine = FakeEngine(
+                lane_vehicles={"road_A1_0": 2, "road_A2_0": 2, "road_B_0": 0},
+                lane_waiting={"road_A1_0": 2, "road_A2_0": 2, "road_B_0": 0},
+                lane_vehicle_ids={
+                    "road_A1_0": ["flow_0_1", "flow_0_2"],   # 2 buses = 6 PCU
+                    "road_A2_0": ["flow_2_1", "flow_2_2"],   # 2 cars  = 2 PCU
+                    "road_B_0": [],
+                },
+            )
+            agent = TrafficAgent(
+                agent_id="Agent-TEST", junction_id="JT", engine=engine,
+                incoming_roads={"EW": ["road_A1", "road_A2"], "NS": ["road_B"]},
+                outgoing_neighbors={"EW": None, "NS": None},
+            )
+            obs = agent.observe({})
+            self.assertAlmostEqual(obs["EW"]["vehicle_count_pcu"], 8.0)
+            # Everyone is waiting, so waiting PCU must equal total PCU (was 14.0 before the fix).
+            self.assertAlmostEqual(obs["EW"]["queue_length_pcu"], 8.0)
+        finally:
+            pcu.register_flow_types({})
+
 
 class TestSpillbackPrevention(unittest.TestCase):
     def _advance_to_min_green_boundary(self, agent, neighbor_states):

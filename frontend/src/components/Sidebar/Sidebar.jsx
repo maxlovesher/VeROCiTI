@@ -8,6 +8,8 @@ const NAV = [
   { id:"incidents", icon:"fa-bell",           label:"Incidents" },
   { id:"livegrid",  icon:"fa-satellite-dish", label:"Live Grid" },
   { id:"cityflow",  icon:"fa-microchip",      label:"City Flow Model" },
+  { id:"signalai",  icon:"fa-brain",          label:"Signal AI" },
+  { id:"insights",  icon:"fa-diagram-project", label:"Network Insights" },
   { id:"webcam",    icon:"fa-video",          label:"Live Webcam" },
 ];
 
