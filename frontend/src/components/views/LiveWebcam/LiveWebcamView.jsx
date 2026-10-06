@@ -71,6 +71,9 @@ export default function LiveWebcamView() {
   const streamRef = useRef(null);
   const runningRef = useRef(false);
   const lastFrameSizeRef = useRef({ w: MAX_FRAME_WIDTH, h: 540 });
+  // Frames stay on this machine when the AI engine is local, so send them large and sharp
+  // enough for plate OCR; over the network (cloud deploy) keep them small.
+  const frameProfileRef = useRef({ maxWidth: 480, quality: 0.55 });
 
   // 1. Alert the author via webhook/email when a judge or visitor opens the CCTV / Live view
   useEffect(() => {
@@ -90,7 +93,13 @@ export default function LiveWebcamView() {
         if (!res.ok) return;
         const data = await res.json();
         if (isMounted) {
-          setColabStatus({ online: Boolean(data.online), checking: false, message: data.message || "" });
+          setColabStatus({
+            online: Boolean(data.online), checking: false, message: data.message || "",
+            mode: data.mode, device: data.device, status: data.status,
+          });
+          frameProfileRef.current = data.online && data.mode === "local"
+            ? { maxWidth: 1280, quality: 0.85 }
+            : { maxWidth: 480, quality: 0.55 };
         }
       } catch {
         if (isMounted) {
@@ -139,8 +148,8 @@ export default function LiveWebcamView() {
         throw new Error("This browser does not support camera access (getUserMedia).");
       }
       const constraints = {
-        width: { ideal: 640, max: 1280 },
-        height: { ideal: 480, max: 720 },
+        width: { ideal: 1280, max: 1920 },
+        height: { ideal: 720, max: 1080 },
         frameRate: { ideal: 30, max: 30 },
       };
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -173,21 +182,22 @@ export default function LiveWebcamView() {
     setStatusMsg("Camera standby");
   }
 
-  // Fast real-time frame capture: downsample to <=480px width with no GPU context stalls
+  // Fast real-time frame capture, downsampled to the current frame profile's width
   async function captureSingleFrame() {
     const video = videoRef.current;
     const canvas = captureCanvasRef.current;
     if (!video || !canvas || video.readyState < 2) return null;
+    const { maxWidth, quality } = frameProfileRef.current;
     const vw = video.videoWidth || 640;
     const vh = video.videoHeight || 480;
-    const scale = Math.min(1, 480 / vw);
+    const scale = Math.min(1, maxWidth / vw);
     const tw = Math.round(vw * scale);
     const th = Math.round(vh * scale);
     if (canvas.width !== tw) canvas.width = tw;
     if (canvas.height !== th) canvas.height = th;
     const ctx = canvas.getContext("2d", { willReadFrequently: false });
     ctx.drawImage(video, 0, 0, tw, th);
-    return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.55));
+    return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
   }
 
   async function runLoop() {
@@ -420,13 +430,19 @@ export default function LiveWebcamView() {
       <div className="lw-env-banner">
         <div className="lw-env-banner-left">
           <span className={`lw-env-badge ${colabStatus.online ? "online" : "offline"}`}>
-            <i className={`fas ${colabStatus.online ? "fa-bolt" : "fa-triangle-exclamation"}`} />
-            {colabStatus.online ? "GPU Accelerator Online" : "Cloud Free Tier (512MB RAM)"}
+            <i className={`fas ${!colabStatus.online ? "fa-triangle-exclamation" : colabStatus.mode === "local" ? (colabStatus.device === "cuda" ? "fa-bolt" : "fa-microchip") : "fa-cloud"}`} />
+            {!colabStatus.online
+              ? "AI Engine Offline"
+              : colabStatus.mode === "local"
+                ? (colabStatus.device === "cuda" ? "Local GPU" : "Local CPU")
+                : "Colab GPU"}
           </span>
           <span>
             {colabStatus.online
-              ? "⚡ Google Colab GPU connected! Real-time ANPR, vehicle profiling & deep OCR enabled."
-              : "Render Free Tier operates within 512MB RAM. For full 1080p deep inference, clone our repo for 1-click local testing or link Colab."}
+              ? (colabStatus.mode === "local"
+                  ? colabStatus.message
+                  : "⚡ Google Colab GPU connected! Real-time ANPR, vehicle profiling & deep OCR enabled.")
+              : "No AI engine connected. Run start.bat to detect on this computer's GPU or CPU, or link a Colab GPU."}
           </span>
         </div>
         <div className="lw-env-banner-actions">

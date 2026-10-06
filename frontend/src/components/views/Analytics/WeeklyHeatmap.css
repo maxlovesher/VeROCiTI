@@ -1,0 +1,52 @@
+.whm { position: relative; display: flex; flex-direction: column; gap: 10px; }
+
+.whm-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.whm-seg { display: inline-flex; padding: 3px; gap: 2px; background: var(--bg); border: 1px solid var(--border); border-radius: 18px; }
+.whm-seg button { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border: 0; border-radius: 14px; background: transparent; color: var(--text2); font-size: 0.7rem; font-weight: 600; cursor: pointer; transition: var(--transition); }
+.whm-seg button i { font-size: 0.66rem; }
+.whm-seg button:hover { color: var(--text); }
+.whm-seg button.active { background: var(--blue-dim); color: var(--blue); }
+.whm-seg.small button { height: 24px; padding: 0 10px; font-size: 0.66rem; }
+
+.whm-summary { display: flex; flex-wrap: wrap; gap: 6px; }
+.whm-summary span { font-size: 0.7rem; color: var(--text2); background: var(--bg); border: 1px solid var(--border); border-radius: 14px; padding: 4px 10px; }
+.whm-summary em { font-style: normal; color: var(--text3); margin-right: 4px; }
+.whm-summary strong { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* The heat map is a real table: 2px surface gaps between rounded cells. */
+.whm-table { width: 100%; border-collapse: separate; border-spacing: 2px; table-layout: fixed; }
+.whm-table th { font-size: 0.62rem; font-weight: 600; color: var(--text3); text-align: center; padding: 0 0 2px; white-space: nowrap; }
+.whm-table th.now { color: var(--blue); }
+.whm-table tbody th { text-align: right; padding: 0 8px 0 0; font-size: 0.68rem; color: var(--text2); }
+.whm-table.hours thead th:first-child { width: 42px; }
+.whm-table.hours td.cell { height: 26px; border-radius: 3px; cursor: default; }
+.whm-table td.cell:hover { outline: 2px solid var(--text); outline-offset: -1px; position: relative; z-index: 1; }
+.whm-table td.cell.current { box-shadow: inset 0 0 0 2px var(--text); }
+
+.whm-scroll { max-height: 420px; overflow-y: auto; border-radius: var(--radius-sm); }
+.whm-table.junctions thead th { position: sticky; top: 0; background: var(--surface); z-index: 2; padding: 4px 0; }
+.whm-table.junctions th.jn { width: 190px; text-align: left; }
+.whm-table.junctions td.cell { height: 24px; border-radius: 3px; text-align: center; font-size: 0.68rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.whm-table.junctions td.cell.today { box-shadow: inset 0 0 0 1px rgba(244, 242, 234, 0.55); }
+.whm-jlink { width: 100%; text-align: left; border: 0; background: transparent; color: var(--text2); font-size: 0.7rem; padding: 0 6px 0 0; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.whm-jlink:hover { color: var(--blue); text-decoration: underline; }
+
+.whm-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.whm-legend { display: flex; align-items: center; gap: 8px; font-size: 0.64rem; color: var(--text3); }
+.whm-legend-bar { width: 160px; height: 8px; border-radius: 4px; }
+.whm-legend-scale { margin-left: 4px; }
+.whm-now-key { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; }
+.whm-now-key i { width: 12px; height: 12px; border-radius: 3px; box-shadow: inset 0 0 0 2px var(--text); }
+.whm-note { font-size: 0.62rem; color: var(--text3); }
+
+.whm-tip { position: absolute; transform: translate(-50%, calc(-100% - 8px)); pointer-events: none; z-index: 20; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow-md); padding: 7px 10px; white-space: nowrap; }
+.whm-tip-head { font-size: 0.66rem; color: var(--text2); margin-bottom: 3px; }
+.whm-tip-val { display: flex; align-items: center; gap: 6px; font-size: 0.74rem; color: var(--text2); }
+.whm-tip-val strong { color: var(--text); font-size: 0.82rem; }
+.whm-tip-swatch { width: 10px; height: 10px; border-radius: 3px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15); }
+
+@media (max-width: 900px) {
+  .whm-table.hours thead th { font-size: 0.55rem; }
+  .whm-table.hours td.cell { height: 20px; }
+  .whm-table.junctions th.jn { width: 120px; }
+}

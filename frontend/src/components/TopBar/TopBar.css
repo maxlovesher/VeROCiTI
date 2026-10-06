@@ -1,4 +1,14 @@
 .topbar { height:var(--topbar-h); display:flex; align-items:center; justify-content:space-between; padding:0 20px; border-bottom:1px solid var(--border); background:rgba(31,30,29,0.6);  flex-shrink:0; }
+.tb-left { display:flex; align-items:center; gap:14px; min-width:0; }
+.tb-menu-btn { width:36px; height:36px; flex-shrink:0; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--surface); color:var(--text); display:flex; align-items:center; justify-content:center; font-size:0.95rem; transition:var(--transition); }
+.tb-menu-btn:hover, .tb-menu-btn.active { border-color:var(--blue); color:var(--blue); }
+.tb-brand { display:flex; align-items:center; gap:8px; padding-right:14px; border-right:1px solid var(--border); flex-shrink:0; }
+.tb-brand-logo { width:26px; height:26px; border-radius:50%; object-fit:cover; background:#fff; }
+.tb-brand-name { font-size:1rem; font-weight:700; color:var(--text); letter-spacing:-0.01em; }
+.tb-brand-name span { color:var(--blue); }
+.tb-title { min-width:0; }
+.tb-title h1, .tb-title .tb-sub { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+@media (max-width: 720px) { .tb-brand { display:none; } }
 .tb-left h1 { font-size:0.88rem; font-weight:600; color:var(--text); letter-spacing:0.04em; text-transform:uppercase; }
 .tb-sub { font-size:0.7rem; color:var(--text3); margin-top:1px; }
 .tb-right { display:flex; align-items:center; gap:8px; }

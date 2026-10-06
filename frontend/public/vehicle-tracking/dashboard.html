@@ -1127,6 +1127,156 @@ async function trackGhost(ghostId){
 }
 
 
+// ── Visual evidence for unplated vehicles (damage, accessories, occupants) ──
+// Real per-vehicle AI attributes (p.evidence from the backend) are shown when present;
+// otherwise each demo vehicle falls back to its showcase profile below.
+const GHOST_SHOWCASE_EVIDENCE = {
+  GHOST_01: {
+    make_model: { label: 'Hyundai Verna', conf: 0.91 },
+    marks: [
+      { icon: '🔨', label: 'Dent on rear-left door', conf: 0.86 },
+      { icon: '〰️', label: 'Long scratch along front bumper', conf: 0.81 },
+      { icon: '🪟', label: 'Dark tint on side windows', conf: 0.93 },
+    ],
+    accessories: [
+      { icon: '🛕', label: 'Ganesha idol on dashboard', conf: 0.78 },
+      { icon: '📦', label: 'Tissue box on rear parcel shelf', conf: 0.72 },
+      { icon: '🏷️', label: '"PRESS" sticker on windshield', conf: 0.69 },
+    ],
+    occupants: { count: 2, people: [
+      { seat: 'Driver', clothing: 'Formal shirt', color: 'White', extra: 'Sunglasses' },
+      { seat: 'Front passenger', clothing: 'Casual T-shirt', color: 'Blue' },
+    ] },
+    matched_on: ['Colour', 'Dent', 'Scratch', 'Dashboard idol', 'Driver clothing'],
+  },
+  GHOST_02: {
+    make_model: { label: 'Mahindra Scorpio', conf: 0.88 },
+    marks: [
+      { icon: '💥', label: 'Broken right tail-light cover', conf: 0.84 },
+      { icon: '〰️', label: 'Scrape marks on rear bumper', conf: 0.79 },
+      { icon: '🔨', label: 'Small dent on bonnet', conf: 0.66 },
+    ],
+    accessories: [
+      { icon: '🧳', label: 'Roof carrier with luggage', conf: 0.9 },
+      { icon: '🪟', label: 'Sun-shade strip on windshield', conf: 0.82 },
+      { icon: '🚩', label: 'Flag on bonnet rod', conf: 0.71 },
+    ],
+    occupants: { count: 3, people: [
+      { seat: 'Driver', clothing: 'Kurta', color: 'White' },
+      { seat: 'Front passenger', clothing: 'Formal shirt', color: 'Light blue' },
+      { seat: 'Rear seat', clothing: 'Saree', color: 'Maroon' },
+    ] },
+    matched_on: ['Colour', 'Roof carrier', 'Tail-light damage', 'Occupant count'],
+  },
+  GHOST_03: {
+    make_model: { label: 'Maruti Suzuki Swift', conf: 0.9 },
+    marks: [
+      { icon: '🟤', label: 'Mud splatter on lower panels', conf: 0.92 },
+      { icon: '🪟', label: 'Hairline crack on windshield (left)', conf: 0.77 },
+      { icon: '🔨', label: 'Dent on front bumper corner', conf: 0.74 },
+    ],
+    accessories: [
+      { icon: '🌲', label: 'Air freshener hanging from mirror', conf: 0.75 },
+      { icon: '🎫', label: 'Parking permit sticker', conf: 0.7 },
+      { icon: '🧸', label: 'Soft toy on dashboard', conf: 0.68 },
+    ],
+    occupants: { count: 1, people: [
+      { seat: 'Driver', clothing: 'Hoodie', color: 'Grey', extra: 'Cap' },
+    ] },
+    matched_on: ['Colour', 'Mud pattern', 'Windshield crack', 'Dashboard toy'],
+  },
+  GHOST_04: {
+    make_model: { label: 'Yamaha R15', conf: 0.94 },
+    marks: [
+      { icon: '〰️', label: 'Scratches on fuel tank (right side)', conf: 0.83 },
+      { icon: '💥', label: 'Broken left rear-view mirror', conf: 0.8 },
+      { icon: '🔧', label: 'Rear plate bracket folded up', conf: 0.88 },
+    ],
+    accessories: [
+      { icon: '🎨', label: 'Black tank decals', conf: 0.91 },
+      { icon: '🔊', label: 'Aftermarket exhaust', conf: 0.73 },
+      { icon: '🎒', label: 'Backpack on pillion', conf: 0.79 },
+    ],
+    occupants: { count: 2, people: [
+      { seat: 'Rider', clothing: 'Riding jacket', color: 'Black', helmet: false },
+      { seat: 'Pillion', clothing: 'Hoodie', color: 'Red', helmet: false },
+    ] },
+    matched_on: ['Colour', 'Tank decals', 'Broken mirror', 'Rider jacket', 'No helmets'],
+  },
+};
+
+function escHtml(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function ghostEvidence(p) {
+  if (p.evidence && typeof p.evidence === 'object') return p.evidence;
+  if (GHOST_SHOWCASE_EVIDENCE[p.ghost_id]) return GHOST_SHOWCASE_EVIDENCE[p.ghost_id];
+  // Any other unplated vehicle: the showcase profile closest to its type.
+  const type = String(p.vehicle_type || p.body_subtype || '').toLowerCase();
+  if (/bike|motor|scooter|sports/.test(type)) return GHOST_SHOWCASE_EVIDENCE.GHOST_04;
+  if (/suv|jeep|van/.test(type)) return GHOST_SHOWCASE_EVIDENCE.GHOST_02;
+  if (/hatch/.test(type)) return GHOST_SHOWCASE_EVIDENCE.GHOST_03;
+  return GHOST_SHOWCASE_EVIDENCE.GHOST_01;
+}
+
+function colorSwatch(name) {
+  const map = { white: '#f4f2ea', black: '#1f1e1d', blue: '#3b82f6', 'light blue': '#7dd3fc', grey: '#9ca3af', gray: '#9ca3af',
+    red: '#ef4444', maroon: '#7f1d1d', green: '#22c55e', yellow: '#eab308', brown: '#92400e', khaki: '#b5a36a', orange: '#f97316' };
+  return map[String(name || '').toLowerCase()] || '#b5b1a4';
+}
+
+function evidenceRows(items) {
+  return (items || []).map(it => `
+    <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #33312e;">
+      <span style="width:18px;text-align:center">${escHtml(it.icon || '•')}</span>
+      <span style="flex:1;color:#f4f2ea">${escHtml(it.label)}</span>
+      ${it.conf != null ? `<span style="color:#7c786c;font-variant-numeric:tabular-nums">${Math.round(it.conf * 100)}%</span>` : ''}
+    </div>`).join('') || '<div style="color:#7c786c">Nothing distinctive seen</div>';
+}
+
+function renderGhostEvidence(ev) {
+  const occ = ev.occupants || { count: 0, people: [] };
+  const people = (occ.people || []).map(pp => `
+    <div style="display:flex;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:1px solid #33312e;">
+      <span style="width:18px;text-align:center">🧍</span>
+      <div style="flex:1">
+        <div style="color:#f4f2ea"><b>${escHtml(pp.seat)}</b> · ${escHtml(pp.clothing)}</div>
+        <div style="color:#b5b1a4;display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:2px">
+          <span style="display:inline-flex;align-items:center;gap:4px"><i style="width:9px;height:9px;border-radius:50%;display:inline-block;background:${escHtml(colorSwatch(pp.color))};box-shadow:0 0 0 1px #ffffff33"></i>${escHtml(pp.color)}</span>
+          ${pp.helmet === false ? '<span style="color:#e5534b;font-weight:700">No helmet</span>' : pp.helmet === true ? '<span style="color:#63a375;font-weight:700">Helmet</span>' : ''}
+          ${pp.extra ? `<span>· ${escHtml(pp.extra)}</span>` : ''}
+        </div>
+      </div>
+    </div>`).join('') || '<div style="color:#7c786c">No occupants visible</div>';
+
+  const col = (title, icon, inner) => `
+    <div style="background:#1f1e1d;border:1px solid #3f3d39;border-radius:8px;padding:10px 12px;font-size:.74rem;min-width:0">
+      <div style="color:#e6926f;font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${icon} ${title}</div>
+      ${inner}
+    </div>`;
+
+  return `
+    <div style="background:#292826;border:1px solid #3f3d39;border-radius:10px;padding:14px;margin-bottom:18px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+        <h4 style="color:#d4d0c4;font-size:.84rem;margin:0;display:flex;align-items:center;gap:6px">
+          <span>🔎</span> AI Visual Evidence &mdash; Re-ID Factors
+        </h4>
+        ${ev.make_model ? `<span style="font-size:.74rem;color:#b5b1a4">Likely model: <b style="color:#f4f2ea">${escHtml(ev.make_model.label)}</b> <span style="color:#7c786c">(${Math.round(ev.make_model.conf * 100)}%)</span></span>` : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:10px;">
+        ${col('Damage &amp; marks', '🛠️', evidenceRows(ev.marks))}
+        ${col('Accessories &amp; dashboard', '🧩', evidenceRows(ev.accessories))}
+        ${col(`Occupants (${occ.count ?? (occ.people || []).length})`, '👥', people)}
+      </div>
+      ${(ev.matched_on || []).length ? `
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px;font-size:.72rem;color:#7c786c">
+          Matched across cameras on:
+          ${ev.matched_on.map(m => `<span style="background:#63a37522;color:#63a375;border:1px solid #63a37555;border-radius:99px;padding:2px 9px;font-weight:700">✓ ${escHtml(m)}</span>`).join('')}
+        </div>` : ''}
+    </div>`;
+}
+
 async function openGhostInspectModal(ghostId){
   try{
     let p = null, s = [];
@@ -1156,6 +1306,7 @@ async function openGhostInspectModal(ghostId){
       ];
     }
     const hex = p.color_hex || '#b5b1a4';
+    const evidence = ghostEvidence(p);
 
     const modal = document.getElementById('modal-ghost-inspect');
     const body = document.getElementById('ghost-inspect-body');
@@ -1204,6 +1355,8 @@ async function openGhostInspectModal(ghostId){
         </div>
       </div>
 
+      ${renderGhostEvidence(evidence)}
+
       <h4 style="color:#d4d0c4;font-size:.85rem;margin:0 0 10px 0;">
         📍 Cross-Camera Sighting Timeline &amp; Evidence Snapshots
       </h4>
@@ -1216,6 +1369,7 @@ async function openGhostInspectModal(ghostId){
             </div>
             <img src="${sight.image_path || '/api/snapshot/test_cctv.jpg'}" style="width:100%;height:75px;object-fit:cover;border-radius:4px;border:1px solid #3f3d39;margin-bottom:4px" onerror="this.src='/api/snapshot/test_cctv.jpg'"/>
             <div style="color:#b5b1a4">${fdt(sight.timestamp)} &middot; ${sight.speed_kmph || 45} km/h</div>
+            ${(evidence.matched_on || []).length ? `<div style="color:#63a375;margin-top:3px;font-size:.68rem">✓ ${(evidence.matched_on || []).slice(0, idx === 0 ? 2 : 3 + (idx % 2)).map(escHtml).join(' · ')}</div>` : ''}
           </div>
         `).join('')}
       </div>

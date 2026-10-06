@@ -8,10 +8,11 @@ const VIEW_TITLES = {
   incidents: { title:"Incidents & Operations",      sub:"AI real-time dispatch alerts & operations log" },
   detail:    { title:"Intersection Console",        sub:"" },
   signalai:  { title:"Signal AI Controller",        sub:"Live multi-agent signal control, 5-junction CityFlow network" },
+  board:     { title:"Physical Board",              sub:"Overhead camera → Signal AI → junction LEDs" },
   insights:  { title:"Network Insights",            sub:"Camera analytics, enforcement & privacy" },
 };
 
-export default function TopBar({ currentView, intersection, stats, currentUser, onLogout, onSwitchToTracking, onOpenHub }) {
+export default function TopBar({ currentView, intersection, stats, currentUser, onLogout, onSwitchToTracking, onOpenHub, onMenu, menuOpen }) {
   const { title, sub } = VIEW_TITLES[currentView] || VIEW_TITLES.overview;
   const congColor = stats.avgCongestion > 70 ? "red" : stats.avgCongestion > 40 ? "amber" : "green";
 
@@ -23,8 +24,25 @@ export default function TopBar({ currentView, intersection, stats, currentUser, 
   return (
     <header className="topbar">
       <div className="tb-left">
-        <h1>{currentView==="detail" && intersection ? intersection.name : title}</h1>
-        <div className="tb-sub">{currentView==="detail" && intersection ? `ID: ${intersection.id}` : sub}</div>
+        {onMenu && (
+          <button
+            className={`tb-menu-btn${menuOpen ? " active" : ""}`}
+            onClick={onMenu}
+            aria-label="Open navigation"
+            aria-expanded={!!menuOpen}
+            title="Menu"
+          >
+            <i className="fas fa-bars" />
+          </button>
+        )}
+        <div className="tb-brand">
+          <img className="tb-brand-logo" src="/verociti-logo.jpg" alt="" />
+          <span className="tb-brand-name">VeRO<span>CiTI</span></span>
+        </div>
+        <div className="tb-title">
+          <h1>{currentView==="detail" && intersection ? intersection.name : title}</h1>
+          <div className="tb-sub">{currentView==="detail" && intersection ? `ID: ${intersection.id}` : sub}</div>
+        </div>
       </div>
       <div className="tb-right">
         {onSwitchToTracking && (

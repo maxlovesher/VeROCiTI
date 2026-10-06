@@ -430,13 +430,14 @@ def register_tracking_routes(app):
         # Local system RAM fallback is disabled so you can directly verify Colab inference!
         COLAB_STRICT_MODE = True
         if COLAB_STRICT_MODE and not delegated_to_gpu:
-            err_msg = "Google Colab GPU Tunnel is not connected or timed out! Click the [GPU Tunnel] button in the header or call /api/set_ai_backend to connect your active trycloudflare.com tunnel."
+            err_msg = ("The AI engine is not connected or timed out. Start VeROCiTI with start.bat to run detection on "
+                       "this computer's GPU/CPU, or connect a Colab GPU tunnel via /api/set_ai_backend.")
             print(f"[Tracking API] {err_msg}")
             return jsonify({
                 "success": False,
                 "error": err_msg,
                 "colab_gpu_required": True,
-                "hint": "Start colab_verociti_gpu.py in Google Colab and paste the generated Cloudflare URL."
+                "hint": "Run start.bat (local AI engine), or start colab_verociti_gpu.py in Google Colab and paste the Cloudflare URL."
             }), 503
 
         # Decode frame using pure OpenCV only if needed for annotation (lightweight, ~10MB RAM)

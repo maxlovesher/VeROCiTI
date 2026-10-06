@@ -878,6 +878,18 @@ def handle_emissions():
         return jsonify(_emissions_summary())
 
 
+# ── Physical demo board: overhead camera -> Signal AI -> LEDs over USB ──
+if os.environ.get("BOARD_DISABLE") != "1":
+    try:
+        from board_api import agent_signals, register_board_routes
+        register_board_routes(
+            app,
+            sim_signals=lambda: {jid: agent_signals(a) for jid, a in live.coordinator.agents.items()},
+        )
+    except Exception as _board_err:
+        print(f"[Server] Note: could not mount board routes: {_board_err}")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("  CityFlow Standalone Server (Simulated Mode)")

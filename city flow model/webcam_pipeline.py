@@ -157,9 +157,15 @@ def _new_track_state():
             "velocity": (0.0, 0.0), "types_hist": []}
 
 
+_track_id_lock = threading.Lock()
+
+
 def _get_next_live_track_id():
+    # Its own lock, not _live_state_lock: the tracker calls this while fast_track already
+    # holds _live_state_lock, and re-acquiring that non-reentrant lock deadlocked the
+    # webcam the first time a new vehicle appeared.
     global _next_live_track_id
-    with _live_state_lock:
+    with _track_id_lock:
         tid = _next_live_track_id
         _next_live_track_id += 1
         return tid
@@ -213,8 +219,9 @@ def match_detections_to_tracks(detections, tracks_dict, now, max_age_seconds=3.0
     for tid in expired:
         tracks_dict.pop(tid, None)
 
-    # 2. Candidate affinities between current detections and active tracks
-    active_items = list(tracks_dict.items())
+    # 2. Candidate affinities between current detections and active tracks.
+    # Plate-only tracks (a plate held up to the camera) are never matched to vehicle detections.
+    active_items = [(tid, trk) for tid, trk in tracks_dict.items() if trk.get("vehicle_type") != "License Plate"]
     candidates = []
 
     for d_idx, det in enumerate(detections):
@@ -356,7 +363,15 @@ def _standardize(frame):
 # ---------------------------------------------------------------------------
 # Multi-frame burst pipeline (live webcam + every second of an uploaded video)
 # ---------------------------------------------------------------------------
-def analyze_burst_frames(m, frames, model, state, fusion, camera_id, crops_out=None, scan_fallback=False):
+def analyze_burst_frames(m, frames, model, state, fusion, camera_id, crops_out=None, scan_fallback=False,
+                         frame_times=None, retired=None):
+    """
+    frame_times: per-frame clock for the tracker (video seconds for an uploaded
+    video, so slow processing can't make vehicles "expire"); defaults to the wall
+    clock for live frames.
+    retired: if given, tracks the tracker drops (vehicle out of view) are moved
+    here instead of being lost, and new track IDs never reuse a retired ID.
+    """
     db, al = _ctx["db"], _ctx["al"]
     t_start = time.time()
     timestamp = datetime.now().isoformat(timespec="seconds")
@@ -401,7 +416,16 @@ def analyze_burst_frames(m, frames, model, state, fusion, camera_id, crops_out=N
                 "tid_hint": tid_hint
             })
 
-        matched_dets = match_detections_to_tracks(frame_dets, state, now=time.time(), max_age_seconds=8.0)
+        now = frame_times[fi] if frame_times is not None else time.time()
+        if retired is not None:
+            before = dict(state)
+            next_id = lambda: max((k for k in [*state, *retired] if isinstance(k, int)), default=0) + 1  # noqa: E731
+            matched_dets = match_detections_to_tracks(frame_dets, state, now=now, max_age_seconds=8.0,
+                                                      id_generator=next_id)
+            for gone in before.keys() - state.keys():
+                retired[gone] = before[gone]
+        else:
+            matched_dets = match_detections_to_tracks(frame_dets, state, now=now, max_age_seconds=8.0)
         for det in matched_dets:
             tid = det["track_id"]
             x1, y1, x2, y2 = det["bbox"]
@@ -1150,16 +1174,24 @@ def _video_worker(job_id, path, camera_id, max_seconds):
             pass
 
         if ai_url:
-            job.update(stage="Offloading 4K video to Google Colab GPU (NVIDIA CUDA)...", progress=25)
+            job.update(status="running", stage="Reading every plate in the video on the AI engine...", progress=25)
             try:
                 import requests
                 with open(path, "rb") as f_vid:
-                    for endpoint in ["/process_video", "/predict_video"]:
+                    for endpoint in ["/predict_video"]:
                         try:
                             f_vid.seek(0)
-                            r = requests.post(f"{ai_url}{endpoint}", files={"file": ("video.mp4", f_vid, "video/mp4")}, timeout=120)
+                            # The engine reads about one frame per second of the window; allow for a CPU engine.
+                            r = requests.post(f"{ai_url.rstrip('/')}{endpoint}",
+                                              files={"file": ("video.mp4", f_vid, "video/mp4")},
+                                              data={"max_seconds": str(max_seconds)},
+                                              timeout=60 + 8 * max_seconds)
                             if r.status_code == 200:
                                 res_json = r.json()
+                                if res_json.get("success") and not res_json.get("vehicles"):
+                                    # Nothing found by the fast engine pass: let the full local pipeline try.
+                                    job.update(stage="No plates on the AI engine pass; running full frame-by-frame analysis...")
+                                    break
                                 if res_json.get("success"):
                                     veh_list = res_json.get("vehicles", [])
                                     cards = []
@@ -1203,15 +1235,17 @@ def _video_worker(job_id, path, camera_id, max_seconds):
                                         cards.append(card)
 
                                     job.update(
-                                        status="done", progress=100, stage="Done (GPU Accelerated)",
+                                        status="done", progress=100,
+                                        stage=f"Done on the AI engine ({res_json.get('device', 'gpu').upper()}, "
+                                              f"{res_json.get('frames_sampled', 0)} frames read)",
                                         cards=cards, elapsed_s=round(time.time() - started, 1),
                                         clip_available=vi.clip_available()
                                     )
                                     return
                         except Exception as ep_err:
-                            print(f"[Webcam Pipeline] Colab endpoint {endpoint} note: {ep_err}")
-            except Exception as colab_err:
-                print(f"[Webcam Pipeline] Colab delegation note: {colab_err}, falling back to local CPU")
+                            print(f"[Webcam Pipeline] AI engine {endpoint} note: {ep_err}")
+            except Exception as engine_err:
+                print(f"[Webcam Pipeline] AI engine video note: {engine_err}, falling back to local analysis")
 
         # ── 2. Local High-Speed Video Processing Engine ──
         cap = cv2.VideoCapture(path)
@@ -1223,7 +1257,7 @@ def _video_worker(job_id, path, camera_id, max_seconds):
 
         model = _yolo("yolov8n.pt")
         fusion = m.anpr.SpatioTemporalSequenceFusion(buffer_size=8)
-        state, crops = {}, {}
+        state, crops, retired = {}, {}, {}
         totals = {"frames_sent": 0, "tracked": 0, "rf_accepted": 0, "rf_deferred": 0, "ocr_runs": 0}
         conditions = Counter()
         latest_tracks = {}
@@ -1235,7 +1269,7 @@ def _video_worker(job_id, path, camera_id, max_seconds):
             # Sample 2 frames per second (smooth tracking, 2x faster than 4fps)
             take = min(2, n)
             picks = {start + int(round(k * (n - 1) / max(1, take - 1))) for k in range(take)}
-            frames = []
+            frames, frame_times = [], []
             while frame_i < end:
                 ok, f = cap.read()
                 if not ok:
@@ -1245,13 +1279,15 @@ def _video_worker(job_id, path, camera_id, max_seconds):
                         s = 960.0 / f.shape[1]
                         f = cv2.resize(f, (960, int(f.shape[0] * s)), interpolation=cv2.INTER_AREA)
                     frames.append(f)
+                    frame_times.append(frame_i / fps)
                 frame_i += 1
             if not frames:
                 break
 
             job["stage"] = f"Second {w + 1}/{seconds_total}: {len(frames)} frames, track, quality gate, OCR, voting"
             with _lock:
-                res = analyze_burst_frames(m, frames, model, state, fusion, camera_id, crops_out=crops)
+                res = analyze_burst_frames(m, frames, model, state, fusion, camera_id, crops_out=crops,
+                                           frame_times=frame_times, retired=retired)
             p = res["pipeline"]
             totals["frames_sent"] += p["frames_received"]
             totals["tracked"] += p["frames_tracked"]
@@ -1268,7 +1304,10 @@ def _video_worker(job_id, path, camera_id, max_seconds):
 
         # Finalize: one card per tracked vehicle; the most informative tracks get the full profile.
         job.update(stage="Building vehicle cards", progress=88)
-        ordered = sorted(crops, key=lambda tid: (bool(state[tid]["plate"]), state[tid]["frames_seen"]), reverse=True)
+        # Vehicles that left the scene were retired, not forgotten: every vehicle seen gets a card.
+        state = {**retired, **state}
+        ordered = sorted((tid for tid in crops if tid in state),
+                         key=lambda tid: (bool(state[tid]["plate"]), state[tid]["frames_seen"]), reverse=True)
         image_model = _get_image_model()
         cards = []
         for rank, tid in enumerate(ordered):
@@ -1357,26 +1396,24 @@ def _live_ocr_worker():
                 _live_ocr_queue.task_done()
                 continue
 
-            plate_found, avg_conf, plate_crop = None, 0.0, None
+            plate_found, avg_conf, plate_crop, plate_bbox = None, 0.0, None, None
 
-            # Check Colab GPU if active
+            # AI engine first (local GPU/CPU engine or Colab): colab_verociti_gpu.py /predict_image
             try:
                 import tracking_api
                 ai_url = getattr(tracking_api, "_LIVE_AI_BACKEND_URL", None)
                 if ai_url:
                     import requests
-                    _, buf = cv2.imencode(".jpg", crop)
+                    _, buf = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
                     r = requests.post(f"{ai_url.rstrip('/')}/predict_image",
-                                      files={"image": ("crop.jpg", buf.tobytes(), "image/jpeg")}, timeout=3.5)
+                                      files={"file": ("crop.jpg", buf.tobytes(), "image/jpeg")}, timeout=6)
                     if r.status_code == 200:
                         gpu_res = r.json()
-                        if gpu_res.get("success") and gpu_res.get("vehicles"):
-                            for gv in gpu_res["vehicles"]:
-                                gp = gv.get("plate")
-                                if gp:
-                                    plate_found = gp
-                                    avg_conf = float(gv.get("plate_confidence", 0.90))
-                                    break
+                        gp = gpu_res.get("plate_number")
+                        if gpu_res.get("success") and gpu_res.get("has_plate") and gp and gp != "NONE":
+                            plate_found = gp
+                            avg_conf = float(gpu_res.get("confidence", 0.90))
+                            plate_bbox = gpu_res.get("plate_bbox")
             except Exception:
                 pass
 
@@ -1438,6 +1475,9 @@ def _live_ocr_worker():
                             _live_state[tid]["plate"] = clean_p
                             _live_state[tid]["conf"] = final_conf
                             _live_state[tid]["status"] = "CONFIRMED"
+                            if tid == PLATE_SWEEP_TRACK_ID and plate_bbox:
+                                # The sweep sent the whole frame, so the plate box is already in frame coordinates.
+                                _live_state[tid]["bbox"] = [int(v) for v in plate_bbox]
                             _live_state[tid]["plate_color"] = plate_color
                             _live_state[tid]["category"] = category
                             if card:
@@ -1482,6 +1522,171 @@ def _live_ocr_worker():
                 _live_ocr_queue.task_done()
             except Exception:
                 pass
+
+
+# ── Multi-plate scan (used whenever an AI engine is connected) ─────────────────
+# The engine reads every plate in the frame in one pass (/predict_plates). Each
+# plate text gets its own track; a plate lying inside a tracked vehicle is also
+# attached to that vehicle. Runs in the background, one scan at a time.
+MULTI_PLATE_SCAN_EVERY_S = 0.6
+MULTI_PLATE_TTL_S = 4.0            # keep showing a plate this long after it was last read
+MULTI_PLATE_FIRST_ID = 99100
+_multi_plate_lock = threading.Lock()
+_multi_plate_tracks = {}           # plate text -> {"track_id", "bbox", "conf", "last_seen", "vehicle_tid"}
+_multi_plate_state = {"busy": False, "last_start": 0.0, "next_id": MULTI_PLATE_FIRST_ID, "session": 0}
+
+
+def _ai_engine_url():
+    try:
+        import tracking_api
+        return (getattr(tracking_api, "_LIVE_AI_BACKEND_URL", "") or "").rstrip("/")
+    except Exception:
+        return ""
+
+
+def _maybe_start_multi_plate_scan(frame, camera_id, timestamp, ai_url):
+    now = time.time()
+    with _multi_plate_lock:
+        if _multi_plate_state["busy"] or now - _multi_plate_state["last_start"] < MULTI_PLATE_SCAN_EVERY_S:
+            return
+        _multi_plate_state["busy"] = True
+        _multi_plate_state["last_start"] = now
+        session = _multi_plate_state["session"]
+    threading.Thread(target=_run_multi_plate_scan, args=(frame.copy(), camera_id, timestamp, ai_url, session),
+                     daemon=True).start()
+
+
+def _run_multi_plate_scan(frame, camera_id, timestamp, ai_url, session):
+    try:
+        import requests
+        _, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        r = requests.post(f"{ai_url}/predict_plates", files={"file": ("frame.jpg", buf.tobytes(), "image/jpeg")},
+                          timeout=10)
+        plates = r.json().get("plates", []) if r.status_code == 200 else []
+        with _multi_plate_lock:
+            if session != _multi_plate_state["session"]:
+                return          # the session was reset while this scan ran; its results are stale
+        now = time.time()
+        new_plates = []
+        for p in plates:
+            text, bbox, conf = p.get("plate"), p.get("bbox"), float(p.get("confidence", 0.0))
+            if not text or not bbox:
+                continue
+            cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+            vehicle_tid = None
+            with _live_state_lock:
+                for tid, st in _live_state.items():
+                    vb = st.get("bbox")
+                    if st.get("vehicle_type") == "License Plate" or not vb:
+                        continue
+                    if vb[0] <= cx <= vb[2] and vb[1] <= cy <= vb[3]:
+                        vehicle_tid = tid
+                        if not st.get("plate"):
+                            st["plate"], st["conf"], st["status"] = text, max(conf, 0.80), "CONFIRMED"
+                        break
+            with _multi_plate_lock:
+                pt = _multi_plate_tracks.get(text)
+                if pt is None:
+                    pt = {"track_id": _multi_plate_state["next_id"]}
+                    _multi_plate_state["next_id"] += 1
+                    _multi_plate_tracks[text] = pt
+                    new_plates.append((text, conf))
+                pt.update(bbox=[int(v) for v in bbox], conf=max(conf, pt.get("conf", 0.0)),
+                          last_seen=now, vehicle_tid=vehicle_tid)
+
+        db, al = _ctx.get("db"), _ctx.get("al")
+        for text, conf in new_plates:
+            if db and al:
+                try:
+                    db.insert_detection(plate=text, camera_id=camera_id, timestamp=timestamp,
+                                        confidence=conf, speed_kmph=0.0, vehicle_type="Car",
+                                        violation="NONE")
+                    al.check_detection(text, camera_id, timestamp)
+                except Exception as dbe:
+                    print(f"[Multi-plate scan] DB note: {dbe}")
+            print(f"[Multi-plate scan] -> Read plate {text} ({conf:.2f})")
+    except Exception as e:
+        print(f"[Multi-plate scan] note: {e}")
+    finally:
+        with _multi_plate_lock:
+            _multi_plate_state["busy"] = False
+
+
+def _multi_plate_tracks_out(timestamp):
+    """Plates read recently and not already shown on their vehicle, as track dicts."""
+    now = time.time()
+    out = []
+    with _multi_plate_lock:
+        for text, pt in list(_multi_plate_tracks.items()):
+            if now - pt.get("last_seen", 0) > MULTI_PLATE_TTL_S:
+                _multi_plate_tracks.pop(text, None)
+                continue
+            if pt.get("vehicle_tid") is not None and pt["vehicle_tid"] in _live_state:
+                continue
+            out.append({
+                "track_id": pt["track_id"],
+                "plate": text,
+                "confidence": round(pt.get("conf", 0.0), 3),
+                "vehicle_type": "License Plate",
+                "bbox": pt["bbox"],
+                "plate_color": "WHITE",
+                "category": "Private Vehicle",
+                "violation": "NONE",
+                "status": "CONFIRMED",
+                "rf_quality_score": 0.92,
+                "timestamp": timestamp,
+            })
+    return out
+
+
+def _reset_multi_plate():
+    with _multi_plate_lock:
+        _multi_plate_tracks.clear()
+        _multi_plate_state.update(last_start=0.0, next_id=MULTI_PLATE_FIRST_ID,
+                                  session=_multi_plate_state["session"] + 1)
+
+
+# ── Single-plate sweep (no AI engine connected) ─────────────────────────────────
+PLATE_SWEEP_TRACK_ID = 99002
+PLATE_SWEEP_INTERVAL_S = 1.5
+
+
+def _queue_plate_sweep(frame, camera_id, timestamp):
+    """
+    Fallback for a plate shown to the camera with no vehicle YOLO can see (and no
+    dedicated plate-detector weights installed): every PLATE_SWEEP_INTERVAL_S the
+    whole frame goes to the OCR worker, which asks the AI engine to find and read
+    a plate anywhere in it. Returns a track dict once a plate has been read.
+    """
+    now = time.time()
+    h, w = frame.shape[:2]
+    with _live_state_lock:
+        st = _live_state.setdefault(PLATE_SWEEP_TRACK_ID, _new_track_state())
+        st["vehicle_type"] = "License Plate"
+        st["last_seen"] = now
+        if not st.get("plate"):
+            st["bbox"] = [0, 0, w, h]
+            st["ocr_tries"] = 0          # keep sweeping; never settle on NO_PLATE
+            if _live_ocr_queue.qsize() < 1 and now - _live_ocr_enqueued_times.get(PLATE_SWEEP_TRACK_ID, 0) > PLATE_SWEEP_INTERVAL_S:
+                try:
+                    _live_ocr_queue.put_nowait((PLATE_SWEEP_TRACK_ID, frame.copy(), 2, camera_id, timestamp))
+                    _live_ocr_enqueued_times[PLATE_SWEEP_TRACK_ID] = now
+                except queue.Full:
+                    pass
+            return None
+        return {
+            "track_id": PLATE_SWEEP_TRACK_ID,
+            "plate": st["plate"],
+            "confidence": st.get("conf", 0.0),
+            "vehicle_type": "License Plate",
+            "bbox": st.get("bbox", [0, 0, w, h]),
+            "plate_color": st.get("plate_color", "WHITE"),
+            "category": st.get("category", "Private Vehicle"),
+            "violation": "NONE",
+            "status": "CONFIRMED",
+            "rf_quality_score": 0.92,
+            "timestamp": timestamp,
+        }
 
 
 def _start_live_ocr_worker():
@@ -1619,7 +1824,12 @@ def register_webcam_routes(app, *, db, al, get_yolo_model, prototype_dir, snapsh
                     "timestamp": timestamp,
                 })
 
-        if not tracks_out:
+        ai_url = _ai_engine_url()
+        if ai_url:
+            # With an AI engine connected, read every plate in view, vehicles or not.
+            _maybe_start_multi_plate_scan(frame, camera_id, timestamp, ai_url)
+            tracks_out.extend(_multi_plate_tracks_out(timestamp))
+        elif not tracks_out:
             # Fallback: check if license plate is held up directly to camera (run every 2nd tick when no car in frame)
             ticks = getattr(fast_track_webcam, "_ticks", 0) + 1
             fast_track_webcam._ticks = ticks
@@ -1666,6 +1876,10 @@ def register_webcam_routes(app, *, db, al, get_yolo_model, prototype_dir, snapsh
                                     "rf_quality_score": 0.92,
                                     "timestamp": timestamp,
                                 })
+                    else:
+                        sweep = _queue_plate_sweep(frame, camera_id, timestamp)
+                        if sweep:
+                            tracks_out.append(sweep)
                 except Exception:
                     pass
 
@@ -1719,6 +1933,7 @@ def register_webcam_routes(app, *, db, al, get_yolo_model, prototype_dir, snapsh
                     break
         with _recent_cards_lock:
             _recent_cards.clear()
+        _reset_multi_plate()
         with _lock:
             try:
                 import anpr
@@ -1864,17 +2079,34 @@ def register_webcam_routes(app, *, db, al, get_yolo_model, prototype_dir, snapsh
             return jsonify({
                 "online": False,
                 "ai_backend": "",
-                "status": "Colab GPU server offline",
-                "message": "Render free tier has 512MB RAM. For full 1080p deep inference, connect Colab or test locally via GitHub."
+                "status": "AI engine offline",
+                "message": "No AI engine connected. Run start.bat to use this computer's GPU/CPU, or connect a Colab GPU."
             })
 
         import requests
         try:
             r = requests.get(f"{ai_url}/health", timeout=1.8)
             if r.status_code == 200:
+                info = r.json() if "json" in r.headers.get("content-type", "") else {}
+                device_name = info.get("device_name") or info.get("device", "GPU")
+                if info.get("mode") == "local":
+                    on_gpu = info.get("device") == "cuda"
+                    return jsonify({
+                        "online": True,
+                        "ai_backend": ai_url,
+                        "mode": "local",
+                        "device": info.get("device"),
+                        "device_name": device_name,
+                        "status": f"Local AI engine: {device_name}",
+                        "message": (f"Running on this computer's {'GPU' if on_gpu else 'CPU and RAM'} ({device_name}). "
+                                    "Full ANPR and vehicle tracking enabled, no cloud needed.")
+                    })
                 return jsonify({
                     "online": True,
                     "ai_backend": ai_url,
+                    "mode": "colab",
+                    "device": info.get("device"),
+                    "device_name": device_name,
                     "status": "Colab GPU online",
                     "message": "AI GPU accelerator is active! Full real-time ANPR and vehicle tracking enabled."
                 })

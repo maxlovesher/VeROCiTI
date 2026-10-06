@@ -15,6 +15,7 @@ import CityFlowView from "./components/views/CityFlow/CityFlowView";
 import LiveWebcamView from "./components/views/LiveWebcam/LiveWebcamView";
 import SignalAI from "./components/views/SignalAI/SignalAI";
 import Insights from "./components/views/Insights/Insights";
+import BoardView from "./components/views/Board/BoardView";
 import LoadingScreen from "./components/common/LoadingScreen/LoadingScreen";
 import LoginScreen from "./components/common/Login/LoginScreen";
 import PortalSelector from "./components/PortalSelector/PortalSelector";
@@ -40,7 +41,18 @@ export default function App() {
     if (p === "traffic" || p === "tracking") return p;
     return "tracking"; // Start directly from ANPR Vehicle Intelligence portal
   });
-  const [view, setView] = useState("overview");
+  // The traffic dashboard opens on the physical board; ?view=<id> (e.g. ?view=overview) picks another page.
+  const [view, setView] = useState(() => new URLSearchParams(window.location.search).get("view") || "board");
+
+  // Navigation lives in a slide-out panel; closed by default so the main screen gets the full width.
+  const [navOpen, setNavOpen] = useState(false);
+  const closeNav = useCallback(() => setNavOpen(false), []);
+  useEffect(() => {
+    // The guided tour opens the panel for steps that point at something inside it.
+    const onTourRequest = (e) => setNavOpen(Boolean(e.detail?.open));
+    window.addEventListener("verociti:nav-panel", onTourRequest);
+    return () => window.removeEventListener("verociti:nav-panel", onTourRequest);
+  }, []);
 
   const [selectedId, setSelectedId] = useState(null);
   const [returnView, setReturnView] = useState("overview");
@@ -296,9 +308,19 @@ export default function App() {
 
   return (
     <div className="app">
-      <Sidebar currentView={view} onNav={handleNav} time={time} date={date} stats={activeStats} />
+      <Sidebar
+        open={navOpen}
+        onClose={closeNav}
+        currentView={view}
+        onNav={(v) => { handleNav(v); closeNav(); }}
+        time={time}
+        date={date}
+        stats={activeStats}
+      />
       <div className="app-main">
-        <TopBar 
+        <TopBar
+          onMenu={() => setNavOpen((o) => !o)}
+          menuOpen={navOpen}
           currentView={view} 
           intersection={view === "livedetail" ? (selectedLiveIntersection || selectedIntersection) : selectedIntersection} 
           stats={activeStats} 
@@ -375,6 +397,7 @@ export default function App() {
           {view === "webcam" && <LiveWebcamView />}
           {view === "signalai" && <SignalAI rawState={rawState} isConnected={isConnected} />}
           {view === "insights" && <Insights />}
+          {view === "board" && <BoardView />}
         </div>
       </div>
       <GuidedTour

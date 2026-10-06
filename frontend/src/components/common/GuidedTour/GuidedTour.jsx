@@ -143,8 +143,8 @@ const TRAFFIC_TOUR_STEPS = [
     example: "Identifies directional flow imbalances to optimize signal green wave offsets.",
   },
   {
-    targetSelector: ".sb-nav-btn:nth-child(2)",
-    buttonSelector: ".sb-nav-btn:nth-child(2)",
+    targetSelector: ".sb-nav-btn[data-view='map']",
+    buttonSelector: ".sb-nav-btn[data-view='map']",
     viewRequired: "map",
     showClickHand: true,
     triggerButton: "[ 🗺️ Live GIS Map ]",
@@ -157,8 +157,8 @@ const TRAFFIC_TOUR_STEPS = [
     example: "Click camera pins across Janpath, Patia, or Jayadev Vihar to inspect live speed and vehicle counts.",
   },
   {
-    targetSelector: ".sb-nav-btn:nth-child(3)",
-    buttonSelector: ".sb-nav-btn:nth-child(3)",
+    targetSelector: ".sb-nav-btn[data-view='emergency']",
+    buttonSelector: ".sb-nav-btn[data-view='emergency']",
     viewRequired: "emergency",
     showClickHand: true,
     triggerButton: "[ 🚑 Green Corridor ]",
@@ -171,8 +171,8 @@ const TRAFFIC_TOUR_STEPS = [
     example: "Demonstrates zero-latency green light routing from Capital Hospital to Bhubaneswar Airport or AIIMS.",
   },
   {
-    targetSelector: ".sb-nav-btn:nth-child(4)",
-    buttonSelector: ".sb-nav-btn:nth-child(4)",
+    targetSelector: ".sb-nav-btn[data-view='analytics']",
+    buttonSelector: ".sb-nav-btn[data-view='analytics']",
     viewRequired: "analytics",
     showClickHand: true,
     triggerButton: "[ 📈 Traffic Analytics ]",
@@ -185,8 +185,8 @@ const TRAFFIC_TOUR_STEPS = [
     example: "Compare peak morning vs evening congestion loads to optimize long-term city infrastructure.",
   },
   {
-    targetSelector: ".sb-nav-btn:nth-child(8)",
-    buttonSelector: ".sb-nav-btn:nth-child(8)",
+    targetSelector: ".sb-nav-btn[data-view='webcam']",
+    buttonSelector: ".sb-nav-btn[data-view='webcam']",
     viewRequired: "webcam",
     showClickHand: true,
     triggerButton: "[ 🎥 Live Webcam / CCTV ]",
@@ -370,6 +370,12 @@ export default function GuidedTour({
 
     const step = steps[currentStepIndex];
     if (!step) return;
+
+    // Sidebar items live in the slide-out navigation panel: open it for steps pointing there.
+    if (currentPortal === "traffic") {
+      const inPanel = [step.targetSelector, step.buttonSelector].some((s) => s && s.startsWith(".sb-"));
+      window.dispatchEvent(new CustomEvent("verociti:nav-panel", { detail: { open: inPanel } }));
+    }
 
     // ── Execute Actions for Traffic Side ──
     if (step.autoOpenIntersection && onSelectIntersection) {
@@ -559,6 +565,9 @@ export default function GuidedTour({
   function handleClose() {
     localStorage.setItem(storageKey, "true");
     setIsOpen(false);
+    if (currentPortal === "traffic") {
+      window.dispatchEvent(new CustomEvent("verociti:nav-panel", { detail: { open: false } }));
+    }
 
     if (currentPortal === "tracking") {
       const iframeInfo = getTrackingIframe();

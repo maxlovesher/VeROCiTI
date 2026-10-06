@@ -10,6 +10,12 @@ pytesseract>=0.3.10
 ultralytics>=8.0.0
 easyocr>=1.7.0
 flask-cors>=4.0.0
+pyserial>=3.5          # USB link to the physical board's Arduino Nanos
+
+# Local AI engine (colab_verociti_gpu.py run on this machine by start.bat)
+fastapi>=0.110.0
+uvicorn>=0.29.0
+python-multipart>=0.0.9
 
 # Vision-language model for make/model, damage and clothing recognition
 transformers>=4.40.0

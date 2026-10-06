@@ -3,6 +3,7 @@ node_modules/
 dist/
 .vite/
 *.log
+*.stackdump
 
 # Secrets and local configuration
 .env
@@ -45,3 +46,8 @@ desktop.ini
 
 # Linter caches
 .ruff_cache/
+
+# Physical board: per-machine camera / calibration / serial settings
+board_config.json
+board_reference.png
+board_anchor.png

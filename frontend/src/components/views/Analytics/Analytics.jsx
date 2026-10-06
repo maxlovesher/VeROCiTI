@@ -14,6 +14,7 @@ import {
 } from "chart.js";
 import { Line, Doughnut, Bar } from "react-chartjs-2";
 import { INTERSECTION_NAMES } from "../../../data/intersections";
+import WeeklyHeatmap from "./WeeklyHeatmap";
 import "./Analytics.css";
 
 // Register chart components explicitly — ensures it works on any machine regardless of import order
@@ -112,6 +113,13 @@ export default function Analytics({ intersections }) {
           <div className="chart-container-220">
             <Line data={timelineData} options={lineOptions} />
           </div>
+        </div>
+
+        <div className="analytics-card full-width">
+          <div className="card-header">
+            <div className="card-title"><i className="fas fa-calendar-week" />Weekly Congestion Heat Map</div>
+          </div>
+          <WeeklyHeatmap intersections={intersections} />
         </div>
 
         <div className="analytics-card">

@@ -27,6 +27,20 @@
 
 Requires Python 3.10+ and Node.js 18+.
 
+**Windows, one click:** double-click `start.bat`. It installs anything missing on the first run, starts the backend, the dashboard and a local AI engine in the background, and opens http://localhost:5173 once they're ready. Press Q or close its window to stop everything; logs go to `logs/`. Run `.\start.bat -CreateShortcut` once to put a VeROCiTI button on your desktop.
+
+The local AI engine (`colab_verociti_gpu.py`, port 8000) does plate and vehicle detection on your own machine, so image, video and webcam analysis need no Colab. It uses an NVIDIA GPU when PyTorch can see one, and otherwise the CPU and RAM. Options:
+
+| Command | Effect |
+|---|---|
+| `.\start.bat -InstallGpu` | One-time install of the CUDA build of PyTorch (~3 GB) so detection runs on an NVIDIA GPU |
+| `.\start.bat -Cpu` | Run detection on the CPU even when a GPU is available |
+| `.\start.bat -NoAI` | Skip the local engine and use a Colab GPU instead |
+
+The same file still runs as a single Colab cell, where it publishes itself through a Cloudflare tunnel as before.
+
+**Any platform, by hand:**
+
 ```bash
 # 1. Backend (port 5000)
 cd "city flow model"
@@ -39,7 +53,7 @@ npm install
 npm run dev
 ```
 
-On Windows, `start.bat` launches both. Open http://localhost:5173.
+Then open http://localhost:5173.
 
 ### Signing in
 

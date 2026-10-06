@@ -1,15 +1,24 @@
 # ==============================================================================
-# VeROCiTI AI GPU Backend - Single-Cell Google Colab Server
-# Multi-Frame CCTV Keyframe Seeking (Sub-2s) & Instant ANPR on NVIDIA CUDA GPU
+# VeROCiTI AI Engine - plate + vehicle detection (YOLOv8 + EasyOCR)
+# Runs two ways from this one file:
+#   * Google Colab (single cell): NVIDIA GPU, published through a Cloudflare tunnel.
+#   * Locally (python colab_verociti_gpu.py, started by start.bat): your own
+#     NVIDIA GPU when PyTorch can see one, otherwise your CPU and RAM. Serves on
+#     127.0.0.1 only; nothing is exposed to the internet.
+# Local overrides: VEROCITI_AI_DEVICE=cuda|cpu, VEROCITI_AI_PORT (default 8000).
 # ==============================================================================
 
 # 1. Install & Verify Dependencies
 import subprocess, sys, os
+IN_COLAB = "google.colab" in sys.modules
 try:
-    import pycloudflared, easyocr, ultralytics, nest_asyncio
+    import fastapi, uvicorn, multipart, easyocr, ultralytics
+    if IN_COLAB:
+        import pycloudflared, nest_asyncio
 except ImportError:
-    print("📦 Installing dependencies in Colab (FastAPI, PyCloudflared, Ultralytics, EasyOCR)...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "fastapi", "uvicorn", "python-multipart", "pycloudflared", "ultralytics", "easyocr", "opencv-python-headless", "pillow", "requests", "nest-asyncio"])
+    extra = ["pycloudflared", "nest-asyncio", "opencv-python-headless"] if IN_COLAB else []
+    print("📦 Installing AI engine dependencies (FastAPI, Ultralytics, EasyOCR)...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "fastapi", "uvicorn", "python-multipart", "ultralytics", "easyocr", "pillow", "requests"] + extra)
     print("✅ Dependencies installed.")
 
 import io, re, cv2, time, base64, random, shutil, tempfile, threading
@@ -20,7 +29,7 @@ import torch
 import easyocr
 import requests
 from ultralytics import YOLO
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -34,8 +43,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"🔥 [VeROCiTI AI] Initializing on Device: {DEVICE}")
+_requested = os.environ.get("VEROCITI_AI_DEVICE", "").strip().lower()
+if _requested == "cuda" and not torch.cuda.is_available():
+    print("⚠️  VEROCITI_AI_DEVICE=cuda but PyTorch can't see an NVIDIA GPU; using the CPU instead.")
+    _requested = "cpu"
+DEVICE = _requested or ("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE_NAME = torch.cuda.get_device_name(0) if DEVICE == "cuda" else f"CPU ({os.cpu_count()} threads)"
+MODE = "colab" if IN_COLAB else "local"
+print(f"🔥 [VeROCiTI AI] Initializing on Device: {DEVICE} - {DEVICE_NAME}")
 
 # Initialize YOLOv8 vehicle detection model
 print("⚡ Loading YOLOv8n vehicle detector...")
@@ -44,7 +59,7 @@ if DEVICE == "cuda":
     yolo_model.to("cuda")
 
 # Initialize EasyOCR
-print("⚡ Loading EasyOCR Engine on GPU...")
+print(f"⚡ Loading EasyOCR Engine on {'GPU' if DEVICE == 'cuda' else 'CPU'}...")
 ocr_reader = easyocr.Reader(["en"], gpu=(DEVICE == "cuda"), verbose=False)
 print("✅ Models loaded and ready for high-speed inference.")
 
@@ -71,13 +86,33 @@ INDIAN_PLATE_REGEX = [
     re.compile(r"^[0-9]{2}BH[0-9]{4}[A-Z]{1,2}$"),
 ]
 
+# Bharat-series plates: YY BH #### XX (e.g. 22 BH 6517 A). They break the usual
+# "state code + district digits" shape, so they get their own OCR clean-up.
+_BH_LIKE = re.compile(r"^([0-9OIZSBG]{2})(BH|8H|BN|8N)([0-9OIZSBG]{4})([A-Z0-9]{1,2})$")
+_TO_DIGIT = str.maketrans({"O": "0", "D": "0", "Q": "0", "I": "1", "L": "1", "Z": "2", "S": "5", "B": "8", "G": "6"})
+_TO_LETTER = str.maketrans({"0": "O", "1": "I", "2": "Z", "4": "A", "5": "S", "6": "G", "8": "B"})
+
+
+def _normalize_bh(cleaned: str) -> Optional[str]:
+    m = _BH_LIKE.match(cleaned)
+    if not m:
+        return None
+    year, _, num, suffix = m.groups()
+    return year.translate(_TO_DIGIT) + "BH" + num.translate(_TO_DIGIT) + suffix.translate(_TO_LETTER)
+
+
 def clean_plate_string(text: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9]", "", text).upper()
     if cleaned.startswith("IND") and len(cleaned) >= 11:
         cleaned = cleaned[3:]
     elif cleaned.startswith("ND") and len(cleaned) >= 10:
         cleaned = cleaned[2:]
-    elif cleaned.startswith("7") and len(cleaned) >= 9:
+
+    bh = _normalize_bh(cleaned)
+    if bh:
+        return bh
+
+    if cleaned.startswith("7") and len(cleaned) >= 9:
         cleaned = "T" + cleaned[1:]
 
     # Chandigarh only has RTO districts 01-04. If CH is followed by digits > 4 (like CH43), it's Maharashtra (MH)
@@ -228,6 +263,72 @@ def detect_plate_in_image(frame: np.ndarray):
 
     return best_plate, best_conf, best_plate_bbox, car_box
 
+MIN_MULTI_PLATE_CONF = 0.15   # below this the "plate" is almost always stray text that happens to fit the format
+
+
+def read_all_plates(frame: np.ndarray, mag_ratio: float = 1.5) -> List[Dict[str, Any]]:
+    """
+    Every readable plate in the frame, from one OCR pass over the whole image:
+    [{"plate", "confidence", "bbox": [x1, y1, x2, y2]}], best first. A plate may
+    be read as one token or split into neighbouring tokens (a gap between groups,
+    or a two-line bike plate), so adjacent tokens are also tried together. Each
+    token ends up in at most one plate, and each plate text is reported once.
+    """
+    try:
+        # Batched recognition: ~2.7x faster on a GPU than EasyOCR's default of one text box at a time.
+        results = ocr_reader.readtext(frame, detail=1, contrast_ths=0.05, adjust_contrast=0.5, mag_ratio=mag_ratio,
+                                      batch_size=16 if DEVICE == "cuda" else 4)
+    except Exception:
+        return []
+
+    tokens = []
+    for box, txt, conf in results:
+        xs = [p[0] for p in box]
+        ys = [p[1] for p in box]
+        text = re.sub(r"[^A-Za-z0-9]", "", txt).upper()
+        if text:
+            tokens.append({"text": text, "conf": float(conf),
+                           "x1": min(xs), "y1": min(ys), "x2": max(xs), "y2": max(ys)})
+
+    def neighbours(a, b):
+        ha, hb = a["y2"] - a["y1"], b["y2"] - b["y1"]
+        h = max(1.0, min(ha, hb))
+        same_line = abs((a["y1"] + a["y2"]) / 2 - (b["y1"] + b["y2"]) / 2) < 0.6 * h and 0 <= b["x1"] - a["x2"] < 1.5 * h
+        stacked = 0 <= b["y1"] - a["y2"] < 0.8 * h and min(a["x2"], b["x2"]) - max(a["x1"], b["x1"]) > 0.3 * min(a["x2"] - a["x1"], b["x2"] - b["x1"])
+        return same_line or stacked
+
+    groups = [[i] for i in range(len(tokens))]
+    for i, a in enumerate(tokens):
+        for j, b in enumerate(tokens):
+            if i != j and neighbours(a, b):
+                groups.append([i, j])
+                for k, c in enumerate(tokens):
+                    if k not in (i, j) and neighbours(b, c):
+                        groups.append([i, j, k])
+
+    candidates = []
+    for g in groups:
+        text = clean_plate_string("".join(tokens[i]["text"] for i in g))
+        if not is_valid_plate(text):
+            continue
+        conf = sum(tokens[i]["conf"] for i in g) / len(g)
+        if conf < MIN_MULTI_PLATE_CONF:
+            continue
+        bbox = [int(min(tokens[i]["x1"] for i in g)), int(min(tokens[i]["y1"] for i in g)),
+                int(max(tokens[i]["x2"] for i in g)), int(max(tokens[i]["y2"] for i in g))]
+        candidates.append({"plate": text, "confidence": round(conf, 3), "bbox": bbox, "_tokens": set(g)})
+
+    candidates.sort(key=lambda c: c["confidence"], reverse=True)
+    used, seen, plates = set(), set(), []
+    for c in candidates:
+        if c["_tokens"] & used or c["plate"] in seen:
+            continue
+        used |= c["_tokens"]
+        seen.add(c["plate"])
+        plates.append({k: v for k, v in c.items() if k != "_tokens"})
+    return plates
+
+
 def draw_plate_annotation(frame: np.ndarray, plate: str, plate_bbox: Optional[List[int]], car_box: List[int]) -> np.ndarray:
     annotated = frame.copy()
     h, w = annotated.shape[:2]
@@ -248,8 +349,10 @@ def draw_plate_annotation(frame: np.ndarray, plate: str, plate_bbox: Optional[Li
     return annotated
 
 @app.get("/")
+@app.get("/health")
 def home():
-    return {"status": "online", "device": DEVICE, "service": "VeROCiTI AI Engine"}
+    return {"status": "online", "device": DEVICE, "device_name": DEVICE_NAME, "mode": MODE,
+            "service": "VeROCiTI AI Engine"}
 
 @app.post("/predict_image")
 async def predict_image(file: UploadFile = File(...)):
@@ -275,31 +378,72 @@ async def predict_image(file: UploadFile = File(...)):
         "device": DEVICE
     }
 
+@app.post("/predict_plates")
+async def predict_plates(file: UploadFile = File(...)):
+    """All readable plates in one frame (the live webcam's multi-plate scan)."""
+    raw = await file.read()
+    frame = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        return JSONResponse({"success": False, "error": "Invalid image file"}, status_code=400)
+    t0 = time.time()
+    plates = read_all_plates(frame)
+    return {"success": True, "plates": plates, "count": len(plates),
+            "elapsed_ms": int((time.time() - t0) * 1000), "device": DEVICE}
+
+
+VIDEO_MAX_SAMPLES = 40          # frames read per video (about one per second of the analysed window)
+VIDEO_MAX_WIDTH = 1280          # frames are scaled down to this before detection/OCR
+VIDEO_KEEP_CONF = 0.30          # a plate seen only once needs at least this confidence to be reported
+VEHICLE_CLASS_NAMES = {1: "Bicycle", 2: "Car", 3: "Motorbike", 5: "Bus", 7: "Truck"}
+
+
+def _vehicles_in(frame: np.ndarray):
+    """[(box, vehicle_type), ...] for every vehicle YOLO finds in the frame."""
+    found = []
+    for r in yolo_model(frame, classes=list(VEHICLE_CLASS_NAMES), conf=0.25, verbose=False):
+        for b in r.boxes:
+            found.append(([int(v) for v in b.xyxy[0].tolist()], VEHICLE_CLASS_NAMES.get(int(b.cls), "Car")))
+    return found
+
+
+def _vehicle_around(bbox, vehicles):
+    """The smallest detected vehicle containing the plate's centre, if any."""
+    cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+    inside = [v for v in vehicles if v[0][0] <= cx <= v[0][2] and v[0][1] <= cy <= v[0][3]]
+    return min(inside, key=lambda v: (v[0][2] - v[0][0]) * (v[0][3] - v[0][1])) if inside else None
+
+
 @app.post("/predict_video")
 @app.post("/process_video")
-async def predict_video(file: UploadFile = File(...)):
+async def predict_video(file: UploadFile = File(...), max_seconds: int = Form(30)):
     """
-    Multi-frame high-speed video keyframe seeking.
-    Seeks directly to 12 keyframe timestamps across the video for 1-2 second GPU inference.
+    Every plate in the first `max_seconds` of the video. About one frame per
+    second of that window is read (at most VIDEO_MAX_SAMPLES); each frame gets
+    the all-plates OCR pass plus vehicle detection, so several vehicles per
+    frame are found. Repeat sightings of a plate are merged, keeping the
+    clearest frame. If no plate is found, the largest vehicle seen is reported
+    as unplated.
     """
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
 
+    t0 = time.time()
     cap = cv2.VideoCapture(tmp_path)
     if not cap.isOpened():
         return JSONResponse({"success": False, "error": "Cannot read video"}, status_code=400)
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if total_frames <= 0:
-        total_frames = 60
+    window_frames = int(fps * max(1, max_seconds))
+    if total_frames > 0:
+        window_frames = min(window_frames, total_frames)
+    window_seconds = window_frames / fps
+    num_samples = max(1, min(VIDEO_MAX_SAMPLES, int(round(window_seconds)) or 1, window_frames))
+    sample_indices = np.linspace(0, max(0, window_frames - 1), num_samples, dtype=int)
 
-    num_samples = min(12, total_frames)
-    sample_indices = np.linspace(int(total_frames * 0.05), int(total_frames * 0.95), num_samples, dtype=int)
-
-    unique_plates = {}
-    unplated_vehicles = []
+    plates: Dict[str, Dict[str, Any]] = {}
+    best_unplated = None
     sampled_count = 0
 
     for f_idx in sample_indices:
@@ -307,38 +451,42 @@ async def predict_video(file: UploadFile = File(...)):
         ret, frame = cap.read()
         if not ret or frame is None:
             continue
+        if frame.shape[1] > VIDEO_MAX_WIDTH:
+            s = VIDEO_MAX_WIDTH / frame.shape[1]
+            frame = cv2.resize(frame, (VIDEO_MAX_WIDTH, int(frame.shape[0] * s)), interpolation=cv2.INTER_AREA)
         sampled_count += 1
-        t_sec = round(f_idx / fps, 2)
-        plate, conf, plate_bbox, car_box = detect_plate_in_image(frame)
-        if plate:
-            if plate not in unique_plates or conf > unique_plates[plate]["confidence"]:
-                annotated = draw_plate_annotation(frame, plate, plate_bbox, car_box)
-                unique_plates[plate] = {
-                    "plate": plate,
-                    "has_plate": True,
-                    "confidence": round(conf or 0.95, 3),
-                    "vehicle_type": "Car",
-                    "violation": "NONE",
-                    "plate_bbox": plate_bbox,
-                    "box": car_box,
-                    "timestamp": t_sec,
-                    "frame_index": int(f_idx),
-                    "image_data": frame_to_base64(annotated)
+        t_sec = round(float(f_idx) / fps, 2)
+        vehicles = _vehicles_in(frame)
+
+        for p in read_all_plates(frame):
+            text, conf, bbox = p["plate"], p["confidence"], p["bbox"]
+            entry = plates.setdefault(text, {"sightings": 0, "first_seen": t_sec, "confidence": -1.0})
+            entry["sightings"] += 1
+            if conf <= entry["confidence"]:
+                continue
+            around = _vehicle_around(bbox, vehicles)
+            box, vtype = (around if around else (bbox, "Car"))
+            h, w = frame.shape[:2]
+            x1, y1, x2, y2 = box
+            pad = 12
+            annotated = draw_plate_annotation(frame, text, bbox, box)
+            crop = annotated[max(0, y1 - pad):min(h, y2 + pad), max(0, x1 - pad):min(w, x2 + pad)] if around else annotated
+            entry.update({
+                "plate": text, "has_plate": True, "confidence": round(conf, 3), "vehicle_type": vtype,
+                "violation": "NONE", "plate_bbox": bbox, "box": box, "timestamp": t_sec,
+                "frame_index": int(f_idx), "image_data": frame_to_base64(crop),
+            })
+
+        if vehicles and not plates:
+            box, vtype = max(vehicles, key=lambda v: (v[0][2] - v[0][0]) * (v[0][3] - v[0][1]))
+            area = (box[2] - box[0]) * (box[3] - box[1])
+            if best_unplated is None or area > best_unplated["_area"]:
+                best_unplated = {
+                    "plate": None, "has_plate": False, "confidence": 0.0, "vehicle_type": vtype,
+                    "violation": "MISSING_OR_COVERED_PLATE", "box": box, "timestamp": t_sec,
+                    "frame_index": int(f_idx), "image_data": frame_to_base64(frame[box[1]:box[3], box[0]:box[2]]),
+                    "_area": area,
                 }
-        else:
-            if not unplated_vehicles:
-                annotated = draw_plate_annotation(frame, None, None, car_box)
-                unplated_vehicles.append({
-                    "plate": None,
-                    "has_plate": False,
-                    "confidence": 0.0,
-                    "vehicle_type": "Car",
-                    "violation": "MISSING_OR_COVERED_PLATE",
-                    "box": car_box,
-                    "timestamp": t_sec,
-                    "frame_index": int(f_idx),
-                    "image_data": frame_to_base64(annotated)
-                })
 
     cap.release()
     try:
@@ -346,18 +494,34 @@ async def predict_video(file: UploadFile = File(...)):
     except Exception:
         pass
 
-    results = list(unique_plates.values()) or unplated_vehicles[:1]
+    # One noisy read is not a plate; a plate read twice, or once clearly, is.
+    results = [e for e in plates.values() if e["sightings"] >= 2 or e["confidence"] >= VIDEO_KEEP_CONF]
+    results.sort(key=lambda e: e["first_seen"])
+    if not results and best_unplated:
+        best_unplated.pop("_area", None)
+        results = [best_unplated]
     return {
         "success": True,
         "total": len(results),
         "fps": fps,
         "frames_sampled": sampled_count,
+        "window_seconds": round(window_seconds, 1),
+        "elapsed_ms": int((time.time() - t0) * 1000),
         "vehicles": results,
         "device": DEVICE
     }
 
 # -----------------------------------------------------------------------------
-# Clean previous processes, Launch Uvicorn, then Start Tunnel & Auto-Sync
+# Local mode: serve on this machine only (start.bat points the backend here).
+# -----------------------------------------------------------------------------
+if not IN_COLAB:
+    port = int(os.environ.get("VEROCITI_AI_PORT", "8000"))
+    print(f"✅ VeROCiTI AI Engine running locally on http://127.0.0.1:{port} ({DEVICE_NAME})")
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    sys.exit(0)
+
+# -----------------------------------------------------------------------------
+# Colab mode: Clean previous processes, Launch Uvicorn, then Start Tunnel & Auto-Sync
 # -----------------------------------------------------------------------------
 os.system("pkill -9 -f cloudflared 2>/dev/null || true")
 os.system("pkill -9 -f uvicorn 2>/dev/null || true")
