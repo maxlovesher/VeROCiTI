@@ -47,6 +47,14 @@
 .sai-stop.preempted { border-color: rgba(99,163,117,0.5); }
 .sai-stop.preempted .sai-stop-state { color: var(--green); }
 .sai-stop.cleared { opacity: 0.6; }
+.sai-stop.yielding { border-color: rgba(214,160,60,0.55); }
+.sai-stop.yielding .sai-stop-state { color: var(--amber, #d6a03c); }
+.sai-amb { display: flex; flex-direction: column; gap: 8px; padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px dashed var(--border); }
+.sai-amb .sai-mini-btn { align-self: flex-start; }
+.sai-count { margin-left: auto; font-size: 0.7rem; font-weight: 600; color: var(--text3); }
+.sai-tag.sev { margin-left: 6px; color: var(--red, #d9534f); }
+.sai-tag.wait { margin-left: 6px; color: var(--amber, #d6a03c); }
+.sai-v em.aging { color: var(--amber, #d6a03c); font-style: normal; }
 .sai-stop.hospital .sai-stop-state { color: var(--blue); }
 
 .sai-bars { display: flex; flex-direction: column; gap: 6px; }

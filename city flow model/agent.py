@@ -70,6 +70,21 @@ class TrafficAgent:
     RECOVERY_WINDOW = 20
     RECOVERY_PRIORITY_BOOST = 5.0
 
+    # Fair scheduling (congestion-first with aging). Congestion decides who
+    # goes first, but every second an approach spends waiting on red adds to
+    # its priority, so even one car on a quiet side road eventually outranks
+    # a jammed main road. Aging only starts after AGING_GRACE_S, so ordinary
+    # short waits are decided on congestion alone; AGING_FULL_S seconds later
+    # aging is worth the largest possible congestion score (1.0). MAX_RED_WAIT_S is
+    # the hard guarantee: past it the waiting approach is served next, no
+    # matter how congested the green one is (only an ambulance or a protected
+    # pedestrian walk can delay it). Both are real seconds from the engine
+    # clock, unlike the per-decision tick counters above; STARVATION_HARD_CAP
+    # stays as the backstop for engines whose clock doesn't advance.
+    AGING_GRACE_S = 0.0
+    AGING_FULL_S = 90.0
+    MAX_RED_WAIT_S = 120.0
+
     def __init__(
         self,
         agent_id: str,
@@ -93,6 +108,8 @@ class TrafficAgent:
         self.allocated_green = self.MIN_GREEN
 
         self.waiting_time_tracker = {p: 0 for p in self.phase_names}
+        # Engine time at which each approach's current red wait began (None = nobody waiting).
+        self._red_wait_since: Dict[str, Optional[float]] = {p: None for p in self.phase_names}
         self.local_obs = {}
         self.congestion_scores = {}
         self.priorities = {}
@@ -175,6 +192,7 @@ class TrafficAgent:
     def observe(self, vehicle_info_map: Dict[str, Any]) -> Dict[str, Any]:
         lane_waiting = self.engine.get_lane_waiting_vehicle_count()
         lane_vehicles = self.engine.get_lane_vehicle_count()
+        now = float(self.engine.get_current_time())
 
         obs = {}
         for phase_name, roads in self.incoming_roads.items():
@@ -221,6 +239,17 @@ class TrafficAgent:
                     self.waiting_time_tracker[phase_name] += 1
                 else:
                     self.waiting_time_tracker[phase_name] = 0
+
+            # Fair scheduling: how long the head of this approach's queue has
+            # been held on red, in real seconds. The clock starts when someone
+            # stops at the red and only resets once the approach gets green
+            # (or empties), so a car creeping forward doesn't reset its wait.
+            if is_active or total_veh == 0:
+                self._red_wait_since[phase_name] = None
+            elif waiting_veh > 0 and self._red_wait_since.get(phase_name) is None:
+                self._red_wait_since[phase_name] = now
+            since = self._red_wait_since.get(phase_name)
+            red_wait_s = round(max(0.0, now - since), 1) if since is not None else 0.0
 
             # Feature 10: pedestrians waiting to cross phase_name's road can
             # only be counted against while phase_name is actually green
@@ -278,6 +307,8 @@ class TrafficAgent:
                 "queue_score": queue_score,
                 "waiting_time": wait_sec,
                 "waiting_score": waiting_score,
+                "red_wait_s": red_wait_s,
+                "aging_boost": round(self._aging(red_wait_s), 3),
                 "congestion_score": cong_score,
                 "status": "HIGH" if density > 0.55 else "MEDIUM" if density > 0.22 else "LOW",
                 "pedestrian_waiting": self.pedestrian_demand.get(phase_name, False),
@@ -324,10 +355,9 @@ class TrafficAgent:
             downstream_cap_factor = max(0.20, 1.0 - downstream_density) * incident_penalty
             priority = local_cong * downstream_cap_factor
 
-        wait_time = obs.get("waiting_time", 0)
-        if wait_time > self.STARVATION_LIMIT:
-            boost = min(0.6, (wait_time - self.STARVATION_LIMIT) / self.STARVATION_LIMIT * 0.5)
-            priority += boost
+        # Fair scheduling: aging grows without limit while the approach waits,
+        # so congestion can delay a quiet approach but never shut it out.
+        priority += self._aging(obs.get("red_wait_s", 0.0))
 
         # Feature 7: conditional bus priority — only buses running late
         # contribute a boost; an on-time bus adds nothing.
@@ -347,6 +377,10 @@ class TrafficAgent:
             priority += 10.0
 
         return round(priority, 3)
+
+    def _aging(self, red_wait_s: float) -> float:
+        """Priority added for time spent waiting on red (fair scheduling)."""
+        return max(0.0, red_wait_s - self.AGING_GRACE_S) / self.AGING_FULL_S
 
     def decide_and_act(self, neighbor_states: Dict[str, Any]) -> str:
         self.step_counter += 1
@@ -456,12 +490,26 @@ class TrafficAgent:
         # pedestrians are still inside their protected walk window.
         ped_protected_other = self.pedestrian_protection_remaining.get(other_phase_name, 0) > 0
 
-        # Maximum green constraint
-        if self.steps_on_phase >= self.MAX_GREEN:
+        # Maximum green constraint. It exists so the other approach isn't kept waiting, so it only
+        # applies when someone is there: with nobody waiting it would give an empty road the green
+        # (and its full min-green hold) while this approach's queue sat on red.
+        other_has_traffic = self.local_obs.get(other_phase_name, {}).get("vehicle_count", 0) > 0
+        if self.steps_on_phase >= self.MAX_GREEN and other_has_traffic:
             self._initiate_switch(other_phase_idx, other_priority, "Max green duration reached")
             return self.last_decision_reason
 
         other_wait = self.local_obs.get(other_phase_name, {}).get("waiting_time", 0)
+        other_red_wait_s = self.local_obs.get(other_phase_name, {}).get("red_wait_s", 0.0)
+
+        # Fair scheduling guarantee: nobody waits on red longer than
+        # MAX_RED_WAIT_S, however congested the green approach is. Checked
+        # before spillback for the same reason as the hard cap below.
+        if other_red_wait_s >= self.MAX_RED_WAIT_S and not ped_protected_other:
+            self._initiate_switch(
+                other_phase_idx, max(other_priority, 1.0),
+                f"⏱ Fairness guarantee: {other_phase_name} waited {other_red_wait_s:.0f}s ≥ {self.MAX_RED_WAIT_S:.0f}s"
+            )
+            return self.last_decision_reason
 
         # Feature 4: starvation hard cap — past this wait, force the switch no
         # matter what the priority comparison says (safety ceiling, not a
@@ -503,6 +551,8 @@ class TrafficAgent:
         if other_priority > cur_priority * self.SWITCH_RATIO and other_priority > 0.15 and not ped_protected_other:
             neighbor = self.outgoing_neighbors.get(cur_phase_name)
             reason = f"Higher load on {other_phase_name} (P={other_priority} vs {cur_priority}){incident_note}"
+            if self._aging(other_red_wait_s) > 0:
+                reason += f" · incl. +{self._aging(other_red_wait_s):.2f} for {other_red_wait_s:.0f}s waiting"
             if use_downstream and neighbor and neighbor in neighbor_states:
                 n_cap = 1.0 - neighbor_states[neighbor].get("overall_density", 0.0)
                 reason += f" · Neighbor {neighbor} cap={int(n_cap*100)}%"
@@ -533,8 +583,9 @@ class TrafficAgent:
     def _decide_historical_profile(self, cur_phase_name: str, other_phase_idx: int, other_phase_name: str) -> str:
         """Feature 9 rung 2: a pre-set time-of-day green split, no live priority computation."""
         other_wait = self.local_obs.get(other_phase_name, {}).get("waiting_time", 0)
+        other_red_wait_s = self.local_obs.get(other_phase_name, {}).get("red_wait_s", 0.0)
         # Even a non-adaptive fallback must not starve an approach indefinitely.
-        if other_wait > self.STARVATION_HARD_CAP:
+        if other_wait > self.STARVATION_HARD_CAP or other_red_wait_s >= self.MAX_RED_WAIT_S:
             other_target = max(self.MIN_GREEN, round(
                 self.historical_green_split.get(other_phase_name, 0.5) * self.HISTORICAL_CYCLE_LENGTH))
             self._initiate_switch(
@@ -636,6 +687,7 @@ class TrafficAgent:
         self.steps_on_phase = 0
         self.allocated_green = self.MIN_GREEN
         self.waiting_time_tracker = {p: 0 for p in self.phase_names}
+        self._red_wait_since = {p: None for p in self.phase_names}
         self.local_obs = {}
         self.priorities = {}
         self.incidents = {}
@@ -661,9 +713,19 @@ class MultiAgentCoordinator:
     EMERGENCY_LEAD_TIME_S = 15.0        # base preemption lead time before the ambulance would arrive
     DISCHARGE_HEADWAY_S = 2.0           # extra lead time budgeted per vehicle already queued (early start)
     AMBULANCE_CLEAR_MARGIN_M = 40.0     # how far past a junction before it's considered "cleared"
+    AMBULANCE_SPEED = 16.0              # metres per coordinator step
+    # Several ambulances at once: a junction can only show one emergency
+    # direction, so when two ambulances want the same junction in different
+    # directions, the one that will get there first is served first
+    # (earliest-deadline-first; ties go to the more severe case, then to the
+    # earlier dispatch). A junction already granted is only handed over if a
+    # rival would arrive this many seconds sooner, so it doesn't flip-flop.
+    MAX_ACTIVE_AMBULANCES = 4
+    AMBULANCE_HANDOVER_MARGIN_S = 5.0
 
-    def __init__(self, engine: Any):
+    def __init__(self, engine: Any, agent_cls: type = None):
         self.engine = engine
+        self.agent_cls = agent_cls or TrafficAgent
         self.agents: Dict[str, TrafficAgent] = {}
         self.message_history: List[Dict[str, Any]] = []
         self.degradation = DegradationLadder()
@@ -671,10 +733,24 @@ class MultiAgentCoordinator:
         # Feature 11: hospital-aware routing needs somewhere to route to.
         self.hospitals: Dict[str, str] = {"City Hospital": "J4", "Capital Hospital": "J5"}
 
-        self.ambulance: Dict[str, Any] = {
+        # Active ambulances by id, which ambulance each junction's emergency
+        # phase currently belongs to, and the most recent finished trip (so
+        # `ambulance` still has something to report once the road is clear).
+        self.ambulances: Dict[str, Dict[str, Any]] = {}
+        self.junction_holder: Dict[str, str] = {}
+        self._last_ambulance: Optional[Dict[str, Any]] = None
+        self._ambulance_seq = 0
+
+        self.active_incidents: Dict[str, Any] = {}
+        self._setup_network()
+
+    @staticmethod
+    def _idle_ambulance() -> Dict[str, Any]:
+        return {
+            "id": None,
             "active": False,
             "progress_m": 0.0,
-            "speed": 16.0,
+            "speed": MultiAgentCoordinator.AMBULANCE_SPEED,
             "route_junctions": [],
             "route_roads": [],      # legacy alias, kept for anything still reading it
             "hospital": None,
@@ -683,38 +759,50 @@ class MultiAgentCoordinator:
             "eta_by_junction": {},
             "triggered_junctions": [],
             "cleared_junctions": [],
-            "corridor": "EW"
+            "waiting_at": None,
+            "held_steps": 0,
+            "corridor": "EW",
         }
 
-        self.active_incidents: Dict[str, Any] = {}
-        self._setup_network()
+    @property
+    def ambulance(self) -> Dict[str, Any]:
+        """
+        The single-ambulance view older callers read: the earliest-dispatched
+        active ambulance, else the last one to finish, else an idle record.
+        """
+        if self.ambulances:
+            return min(self.ambulances.values(), key=lambda a: a["seq"])
+        return self._last_ambulance or self._idle_ambulance()
+
+    def active_ambulances(self) -> List[Dict[str, Any]]:
+        return sorted(self.ambulances.values(), key=lambda a: a["seq"])
 
     def _setup_network(self):
-        self.agents["J1"] = TrafficAgent(
+        self.agents["J1"] = self.agent_cls(
             agent_id="Agent-J1", junction_id="J1", engine=self.engine,
             incoming_roads={"EW": ["road_VW1_J1", "road_J3_J1"], "NS": ["road_VN1_J1", "road_VS1_J1"]},
             outgoing_neighbors={"EW": "J3", "NS": None}
         )
 
-        self.agents["J2"] = TrafficAgent(
+        self.agents["J2"] = self.agent_cls(
             agent_id="Agent-J2", junction_id="J2", engine=self.engine,
             incoming_roads={"EW": ["road_VW2_J2", "road_VE2_J2"], "NS": ["road_VN2_J2", "road_J3_J2"]},
             outgoing_neighbors={"EW": None, "NS": "J3"}
         )
 
-        self.agents["J3"] = TrafficAgent(
+        self.agents["J3"] = self.agent_cls(
             agent_id="Agent-J3", junction_id="J3", engine=self.engine,
             incoming_roads={"EW": ["road_J1_J3", "road_J4_J3"], "NS": ["road_J2_J3", "road_J5_J3"]},
             outgoing_neighbors={"EW": "J4", "NS": "J5"}
         )
 
-        self.agents["J4"] = TrafficAgent(
+        self.agents["J4"] = self.agent_cls(
             agent_id="Agent-J4", junction_id="J4", engine=self.engine,
             incoming_roads={"EW": ["road_J3_J4", "road_VE4_J4"], "NS": ["road_VN4_J4", "road_VS4_J4"]},
             outgoing_neighbors={"EW": "J3", "NS": None}
         )
 
-        self.agents["J5"] = TrafficAgent(
+        self.agents["J5"] = self.agent_cls(
             agent_id="Agent-J5", junction_id="J5", engine=self.engine,
             incoming_roads={"EW": ["road_VW5_J5", "road_VE5_J5"], "NS": ["road_J3_J5", "road_VS5_J5"]},
             outgoing_neighbors={"EW": None, "NS": "J3"}
@@ -734,7 +822,7 @@ class MultiAgentCoordinator:
             if agent.control_mode != current_rung:
                 agent.set_control_mode(current_rung)
 
-        self._update_ambulance()
+        self._update_ambulances()
 
         for agent in self.agents.values():
             agent.observe(vehicle_info_map)
@@ -758,6 +846,7 @@ class MultiAgentCoordinator:
             "broadcasts": current_broadcasts,
             "decisions": decisions,
             "ambulance": dict(self.ambulance),
+            "ambulances": [dict(a) for a in self.active_ambulances()],
             "control_mode": current_rung
         }
 
@@ -798,96 +887,206 @@ class MultiAgentCoordinator:
                 return phase_name
         return None
 
-    def dispatch_ambulance(self, origin_junction: str = "J1", hospitals: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
+    def dispatch_ambulance(
+        self, origin_junction: str = "J1", hospitals: Optional[Dict[str, str]] = None, severity: int = 1
+    ) -> Optional[Dict[str, Any]]:
         """
         Feature 11: hospital-aware routing — picks the nearest reachable
-        hospital from `origin_junction` and starts the ambulance toward it.
-        Returns the chosen route, or None if no hospital is reachable.
+        hospital from `origin_junction` and starts a new ambulance toward it,
+        alongside any already on the road. `severity` (1 = routine .. 3 =
+        critical) only breaks ties between ambulances that would reach the
+        same junction at the same moment. Returns the new ambulance's id and
+        route, or None if no hospital is reachable or MAX_ACTIVE_AMBULANCES
+        are already out.
         """
+        if len(self.ambulances) >= self.MAX_ACTIVE_AMBULANCES:
+            return None
         hosp_table = hospitals if hospitals is not None else self.hospitals
         result = ambulance.nearest_hospital(origin_junction, hosp_table, self._adjacency())
         if not result:
             return None
         hospital_name, route = result
 
-        self.ambulance.update({
+        self._ambulance_seq += 1
+        amb_id = f"AMB-{self._ambulance_seq}"
+        now = float(self.engine.get_current_time())
+        amb = self._idle_ambulance()
+        amb.update({
+            "id": amb_id,
+            "seq": self._ambulance_seq,
+            "severity": max(1, min(3, int(severity))),
             "active": True,
-            "progress_m": 0.0,
-            "speed": 16.0,
             "route_junctions": route,
             "route_roads": route,
             "hospital": hospital_name,
             "current_road": f"{route[0]}→{route[1]}" if len(route) > 1 else route[0],
-            "road_dist": 0.0,
-            "eta_by_junction": {},
-            "triggered_junctions": [],
-            "cleared_junctions": [],
+            "corridor": (self._phase_towards(route[0], route[1]) if len(route) > 1 else None) or "EW",
+            "claimed_junctions": [],
+            "yielding_to": {},
+            "dispatched_at": now,
+            "arrived_at": None,
         })
-        return {"hospital": hospital_name, "route_junctions": route}
-
-    def _update_ambulance(self):
-        if not self.ambulance["active"]:
-            return
-
-        route = self.ambulance["route_junctions"]
         if len(route) < 2:
-            # No usable route (e.g. hospital unreachable from origin) — nothing to drive.
-            self.ambulance["active"] = False
+            # Already at the hospital's junction: nothing to drive.
+            amb["active"] = False
+            amb["arrived_at"] = now
+            self._last_ambulance = amb
+        else:
+            self.ambulances[amb_id] = amb
+        return {"id": amb_id, "hospital": hospital_name, "route_junctions": route}
+
+    def stand_down_ambulance(self, amb_id: Optional[str] = None) -> bool:
+        """Call off one ambulance (or every one when amb_id is None) and give its junctions back."""
+        if amb_id is not None and amb_id not in self.ambulances:
+            return False
+        targets = [self.ambulances[amb_id]] if amb_id is not None else self.active_ambulances()
+        for amb in targets:
+            self._finish_ambulance(amb, arrived=False)
+        self._refresh_corridors()
+        return True
+
+    def _update_ambulances(self):
+        if not self.ambulances and not self.junction_holder:
+            return
+        link_len = self.AMBULANCE_LINK_DISTANCE_M
+
+        # 1. Drive. An ambulance never runs a junction whose signal isn't
+        #    green for it yet; it waits at the stop line instead.
+        for amb in self.active_ambulances():
+            self._move_ambulance(amb, link_len)
+
+        # 2. Junctions passed and hospitals reached.
+        for amb in self.active_ambulances():
+            route = amb["route_junctions"]
+            prog = amb["progress_m"]
+            for i, jid in enumerate(route[:-1]):
+                if jid not in amb["cleared_junctions"] and prog >= i * link_len + self.AMBULANCE_CLEAR_MARGIN_M:
+                    amb["cleared_junctions"].append(jid)
+            if prog >= (len(route) - 1) * link_len + self.AMBULANCE_CLEAR_MARGIN_M:
+                self._finish_ambulance(amb, arrived=True)
+
+        # 3. Who needs which junction now, and who gets it.
+        self._refresh_corridors()
+
+    def _move_ambulance(self, amb: Dict[str, Any], link_len: float) -> None:
+        route = amb["route_junctions"]
+        prog = amb["progress_m"]
+        target = prog + amb["speed"]
+        amb["waiting_at"] = None
+        for i, jid in enumerate(route[:-1]):
+            pos = i * link_len
+            if pos < prog or pos > target:
+                continue
+            if not self._green_for(jid, route[i + 1]):
+                target = pos
+                amb["waiting_at"] = jid
+                amb["held_steps"] += 1
+            break
+        amb["progress_m"] = target
+        total_links = len(route) - 1
+        current_link = min(int(target // link_len), total_links - 1)
+        amb["current_road"] = f"{route[current_link]}→{route[current_link + 1]}"
+        amb["road_dist"] = round(target - current_link * link_len, 1)
+
+    def _green_for(self, junction_id: str, next_junction_id: str) -> bool:
+        """True once junction_id's emergency phase is showing green toward next_junction_id."""
+        agent = self.agents.get(junction_id)
+        phase = self._phase_towards(junction_id, next_junction_id)
+        if agent is None or phase is None:
+            return True
+        return (
+            agent.emergency_override == phase
+            and not agent.is_yellow
+            and not agent.is_all_red
+            and agent.phase_names[agent.current_phase] == phase
+        )
+
+    def _refresh_corridors(self) -> None:
+        """
+        Feature 11: ETA-based triggering, extended to several ambulances.
+        Each ambulance claims the junctions ahead of it once its ETA is inside
+        the required lead time (with the early-start allowance for traffic
+        already queued on its approach); each junction then goes to one
+        claimant, and junctions nobody needs any more are released into their
+        recovery phase.
+        """
+        link_len = self.AMBULANCE_LINK_DISTANCE_M
+        claims: Dict[str, List[Dict[str, Any]]] = {}
+        for amb in self.active_ambulances():
+            route = amb["route_junctions"]
+            prog = amb["progress_m"]
+            eta_map = {}
+            for i, jid in enumerate(route):
+                remaining_m = max(0.0, i * link_len - prog)
+                eta_map[jid] = round(ambulance.eta_seconds(remaining_m, amb["speed"]), 1)
+            amb["eta_by_junction"] = eta_map
+
+            # The hospital's own junction (route[-1]) is the arrival point,
+            # not another junction to preempt through.
+            for i, jid in enumerate(route[:-1]):
+                agent = self.agents.get(jid)
+                phase = self._phase_towards(jid, route[i + 1])
+                if not agent or not phase or jid in amb["cleared_junctions"]:
+                    continue
+                if jid not in amb["claimed_junctions"]:
+                    queue_len = agent.local_obs.get(phase, {}).get("queue_length", 0)
+                    if not ambulance.should_trigger(eta_map[jid], self.EMERGENCY_LEAD_TIME_S, queue_len, self.DISCHARGE_HEADWAY_S):
+                        continue
+                    amb["claimed_junctions"].append(jid)
+                claims.setdefault(jid, []).append({"amb": amb, "phase": phase, "eta": eta_map[jid]})
+
+        for jid in set(self.junction_holder) | set(claims):
+            self._arbitrate_junction(jid, claims.get(jid, []))
+
+    def _arbitrate_junction(self, jid: str, entries: List[Dict[str, Any]]) -> None:
+        agent = self.agents[jid]
+        if not entries:
+            self.junction_holder.pop(jid, None)
+            if agent.emergency_override is not None:
+                agent.set_emergency(None)   # triggers that agent's recovery phase (Feature 11)
             return
 
-        self.ambulance["progress_m"] += self.ambulance["speed"]
-        prog = self.ambulance["progress_m"]
-        link_len = self.AMBULANCE_LINK_DISTANCE_M
-        total_links = len(route) - 1
+        def urgency(c):
+            return (c["eta"], -c["amb"]["severity"], c["amb"]["seq"])
 
-        current_link = min(int(prog // link_len), total_links - 1)
-        self.ambulance["current_road"] = f"{route[current_link]}→{route[current_link + 1]}"
-        self.ambulance["road_dist"] = round(prog - current_link * link_len, 1)
+        best = min(entries, key=urgency)
+        holder = next((c for c in entries if c["amb"]["id"] == self.junction_holder.get(jid)), None)
+        if holder is None:
+            chosen = best
+        elif best["phase"] != holder["phase"] and best["eta"] + self.AMBULANCE_HANDOVER_MARGIN_S < holder["eta"]:
+            # A rival will be here clearly sooner (or the holder is stuck
+            # waiting somewhere else): hand the junction over.
+            chosen = best
+        else:
+            chosen = holder
 
-        # Feature 11: ETA-based triggering — compute a live ETA to every
-        # junction still ahead, then preempt (with an early-start allowance
-        # for the queue already sitting there) once that ETA is inside the
-        # required lead time. This replaces the old fixed distance
-        # breakpoints with a genuine per-junction ETA calculation.
-        eta_map = {}
-        for i, jid in enumerate(route):
-            remaining_m = max(0.0, i * link_len - prog)
-            eta_map[jid] = round(ambulance.eta_seconds(remaining_m, self.ambulance["speed"]), 1)
-        self.ambulance["eta_by_junction"] = eta_map
+        self.junction_holder[jid] = chosen["amb"]["id"]
+        if agent.emergency_override != chosen["phase"]:
+            agent.set_emergency(chosen["phase"])
 
-        # The hospital's own junction (route[-1]) is the arrival point, not
-        # another junction to preempt through — only the hops in between
-        # need signal preemption.
-        for i, jid in enumerate(route[:-1]):
-            agent = self.agents.get(jid)
-            if not agent:
-                continue
-            phase = self._phase_towards(jid, route[i + 1])
-            if not phase:
-                continue
+        for c in entries:
+            amb = c["amb"]
+            if c["phase"] == chosen["phase"]:
+                # Same direction as the winner: it shares the green.
+                amb["yielding_to"].pop(jid, None)
+                if jid not in amb["triggered_junctions"]:
+                    amb["triggered_junctions"].append(jid)
+            else:
+                amb["yielding_to"][jid] = chosen["amb"]["id"]
+                if jid in amb["triggered_junctions"]:
+                    amb["triggered_junctions"].remove(jid)
 
-            already_triggered = jid in self.ambulance["triggered_junctions"]
-            already_cleared = jid in self.ambulance["cleared_junctions"]
-
-            if not already_triggered and not already_cleared:
-                queue_len = agent.local_obs.get(phase, {}).get("queue_length", 0)
-                if ambulance.should_trigger(eta_map[jid], self.EMERGENCY_LEAD_TIME_S, queue_len, self.DISCHARGE_HEADWAY_S):
-                    agent.set_emergency(phase)
-                    self.ambulance["triggered_junctions"].append(jid)
-
-            elif already_triggered and not already_cleared:
-                junction_pos_m = i * link_len
-                if prog >= junction_pos_m + self.AMBULANCE_CLEAR_MARGIN_M:
-                    agent.set_emergency(None)   # triggers that agent's recovery phase (Feature 11)
-                    self.ambulance["cleared_junctions"].append(jid)
-
-        if prog >= total_links * link_len + self.AMBULANCE_CLEAR_MARGIN_M:
-            self.ambulance["active"] = False
-            self.ambulance["progress_m"] = 0.0
-            for jid in route[:-1]:
-                if jid in self.agents and jid not in self.ambulance["cleared_junctions"]:
-                    self.agents[jid].set_emergency(None)
-                    self.ambulance["cleared_junctions"].append(jid)
+    def _finish_ambulance(self, amb: Dict[str, Any], arrived: bool) -> None:
+        amb["active"] = False
+        amb["waiting_at"] = None
+        amb["yielding_to"] = {}
+        if arrived:
+            amb["arrived_at"] = float(self.engine.get_current_time())
+            for jid in amb["route_junctions"][:-1]:
+                if jid not in amb["cleared_junctions"]:
+                    amb["cleared_junctions"].append(jid)
+        self.ambulances.pop(amb["id"], None)
+        self._last_ambulance = amb
 
     def set_incident(self, junction_id: str, road_id: str, incident_type: str, active: bool = True):
         if active:
@@ -911,5 +1110,7 @@ class MultiAgentCoordinator:
         self.message_history.clear()
         self.active_incidents.clear()
         self.degradation.reset()
-        self.ambulance["active"] = False
-        self.ambulance["progress_m"] = 0.0
+        self.ambulances.clear()
+        self.junction_holder.clear()
+        self._last_ambulance = None
+        self._ambulance_seq = 0

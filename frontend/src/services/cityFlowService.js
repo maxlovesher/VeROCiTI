@@ -128,8 +128,12 @@ async function postJson(path, body) {
 }
 
 // Feature 11: hospital-aware ambulance corridor.
-export function dispatchAmbulance(origin = 'J1') { return postJson('/ambulance', { active: true, origin }); }
-export function standDownAmbulance() { return postJson('/ambulance', { active: false }); }
+// Several ambulances can be out at once; `hospital` (optional) overrides the nearest-hospital choice,
+// `severity` (1-3) breaks ties when two reach a junction together. Leave `id` out to stand them all down.
+export function dispatchAmbulance(origin = 'J1', { hospital, severity } = {}) {
+  return postJson('/ambulance', { active: true, origin, ...(hospital ? { hospital } : {}), ...(severity ? { severity } : {}) });
+}
+export function standDownAmbulance(id) { return postJson('/ambulance', { active: false, ...(id ? { id } : {}) }); }
 
 // Feature 9: degradation ladder — pin a rung ("AUTO" releases it), or simulate a failed sensor feed.
 export function setControlMode(mode) { return postJson('/control_mode', { mode }); }

@@ -116,7 +116,8 @@ def _refresh_state():
             "agents": agent_states,
             "agent_messages": coordinator.message_history[-15:],
             "active_incidents": list(coordinator.active_incidents.values()),
-            "ambulance": dict(coordinator.ambulance)
+            "ambulance": dict(coordinator.ambulance),
+            "ambulances": [dict(a) for a in coordinator.active_ambulances()]
         })
 
 
@@ -200,9 +201,14 @@ def handle_incident():
 
 @app.route("/api/ambulance", methods=["POST"])
 def handle_ambulance():
-    coordinator.dispatch_ambulance()
+    data = request.get_json(silent=True) or {}
+    if data.get("active") is False:
+        coordinator.stand_down_ambulance(data.get("id"))
+    else:
+        coordinator.dispatch_ambulance(data.get("origin", "J1"), severity=data.get("severity", 1))
     _refresh_state()
-    return jsonify({"ok": True, "ambulance": coordinator.ambulance})
+    return jsonify({"ok": True, "ambulance": dict(coordinator.ambulance),
+                    "ambulances": [dict(a) for a in coordinator.active_ambulances()]})
 
 
 @app.route("/api/override", methods=["POST"])

@@ -8,7 +8,7 @@ const VIEW_TITLES = {
   incidents: { title:"Incidents & Operations",      sub:"AI real-time dispatch alerts & operations log" },
   detail:    { title:"Intersection Console",        sub:"" },
   signalai:  { title:"Signal AI Controller",        sub:"Live multi-agent signal control, 5-junction CityFlow network" },
-  board:     { title:"Physical Board",              sub:"Overhead camera → Signal AI → junction LEDs" },
+  board:     { title:"LED Board",                   sub:"The Signal AI's lights on the real board" },
   insights:  { title:"Network Insights",            sub:"Camera analytics, enforcement & privacy" },
 };
 

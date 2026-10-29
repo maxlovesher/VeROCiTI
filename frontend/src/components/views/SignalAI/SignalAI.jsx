@@ -51,8 +51,11 @@ function Approach({ jid, phase, obs, bus, isGreen, onPedCall, busy }) {
           </span>
         </div>
         <div>
-          <span className="sai-k">Wait</span>
-          <span className="sai-v">{obs.waiting_time} steps</span>
+          <span className="sai-k">Red wait</span>
+          <span className="sai-v">
+            {Math.round(obs.red_wait_s ?? 0)} s
+            {obs.aging_boost > 0 && <em className="aging" title="Fair scheduling: priority added for time spent waiting"> · +{obs.aging_boost}</em>}
+          </span>
         </div>
       </div>
       <div className="sai-advisory" title="Green-light speed advisory for this approach's VMS">
@@ -89,6 +92,8 @@ export default function SignalAI({ rawState, isConnected }) {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const [origin, setOrigin] = useState("J1");
+  const [hospital, setHospital] = useState("");
+  const [severity, setSeverity] = useState(1);
 
   async function act(key, fn) {
     setBusy(key);
@@ -119,9 +124,11 @@ export default function SignalAI({ rawState, isConnected }) {
   const mode = rawState.control_mode;
   const forced = rawState.control_mode_forced;
   const amb = rawState.ambulance || {};
+  // Older servers only send the single `ambulance`; newer ones list every ambulance on the road.
+  const ambulances = rawState.ambulances || (amb.active ? [amb] : []);
+  const maxAmbulances = rawState.max_ambulances || 1;
   const em = rawState.emissions || {};
   const waves = rawState.green_wave || [];
-  const route = amb.route_junctions || [];
   const idleMax = Math.max(em.baseline?.avg_idle_s || 0, em.live?.avg_idle_s || 0, 1);
 
   return (
@@ -170,51 +177,79 @@ export default function SignalAI({ rawState, isConnected }) {
           </label>
         </section>
 
-        {/* Feature 11 — ambulance corridor */}
-        <section className={`sai-card${amb.active ? " alert" : ""}`}>
-          <div className="sai-title"><i className="fas fa-truck-medical" /> Ambulance corridor</div>
-          {amb.active ? (
-            <>
-              <div className="sai-amb-status">En route to <strong>{amb.hospital}</strong> · {Math.round(amb.progress_m)} m travelled</div>
+        {/* Feature 11 — ambulance corridors, several at once */}
+        <section className={`sai-card${ambulances.length ? " alert" : ""}`}>
+          <div className="sai-title">
+            <i className="fas fa-truck-medical" /> Ambulance corridors
+            {ambulances.length > 0 && <span className="sai-count">{ambulances.length}/{maxAmbulances}</span>}
+          </div>
+          {ambulances.map((a) => (
+            <div key={a.id || "amb"} className="sai-amb">
+              <div className="sai-amb-status">
+                <strong>{a.id}</strong> → <strong>{a.hospital}</strong> · {Math.round(a.progress_m)} m
+                {a.severity > 1 && <span className="sai-tag sev">severity {a.severity}</span>}
+                {a.waiting_at && <span className="sai-tag wait">stopped at {a.waiting_at}</span>}
+              </div>
               <div className="sai-route">
-                {route.map((jid, i) => {
-                  const cleared = amb.cleared_junctions?.includes(jid);
-                  const preempted = amb.triggered_junctions?.includes(jid) && !cleared;
-                  const isHospital = i === route.length - 1;
-                  const state = isHospital ? "hospital" : cleared ? "cleared" : preempted ? "preempted" : "pending";
+                {(a.route_junctions || []).map((jid, i, r) => {
+                  const cleared = a.cleared_junctions?.includes(jid);
+                  const preempted = a.triggered_junctions?.includes(jid) && !cleared;
+                  const yieldTo = a.yielding_to?.[jid];
+                  const isHospital = i === r.length - 1;
+                  const state = isHospital ? "hospital" : cleared ? "cleared" : preempted ? "preempted" : yieldTo ? "yielding" : "pending";
+                  const label = isHospital ? "hospital" : cleared ? "cleared" : preempted ? "green held"
+                    : yieldTo ? `after ${yieldTo}` : `ETA ${a.eta_by_junction?.[jid] ?? "–"}`;
                   return (
                     <div key={jid} className={`sai-stop ${state}`}>
                       <span className="sai-stop-id">{jid}</span>
-                      <span className="sai-stop-state">
-                        {isHospital ? "hospital" : cleared ? "cleared" : preempted ? "green held" : `ETA ${amb.eta_by_junction?.[jid] ?? "–"} s`}
-                      </span>
+                      <span className="sai-stop-state">{label}</span>
                     </div>
                   );
                 })}
               </div>
-              <button className="sai-btn danger" disabled={!!busy} onClick={() => act("amb", standDownAmbulance)}>
-                Stand down
+              <button className="sai-mini-btn" disabled={!!busy} onClick={() => act(`amb-${a.id}`, () => standDownAmbulance(a.id))}>
+                Stand down {a.id}
               </button>
-            </>
-          ) : (
-            <>
-              <div className="sai-amb-status">
-                Routes to the nearest hospital, pre-empts each junction by live ETA (earlier when a queue is waiting),
-                runs amber + all-red before the emergency green, then serves the most-starved approach first.
-              </div>
-              <div className="sai-row">
-                <select value={origin} onChange={(e) => setOrigin(e.target.value)} className="sai-select">
-                  {JUNCTIONS.map((j) => <option key={j} value={j}>From {j}</option>)}
-                </select>
-                <button className="sai-btn primary" disabled={!!busy} onClick={() => act("amb", () => dispatchAmbulance(origin))}>
-                  <i className="fas fa-play" /> Dispatch
-                </button>
-              </div>
-              <div className="sai-hint">
-                Hospitals: {Object.entries(rawState.hospitals || {}).map(([h, j]) => `${h} (${j})`).join(", ")}
-              </div>
-            </>
+            </div>
+          ))}
+          {ambulances.length === 0 && (
+            <div className="sai-amb-status">
+              Routes to the nearest hospital, pre-empts each junction by live ETA (earlier when a queue is waiting),
+              runs amber + all-red before the emergency green, then serves the most-starved approach first.
+              When two ambulances need one junction in different directions, the one arriving first goes first.
+            </div>
           )}
+          {ambulances.length < maxAmbulances && (
+            <div className="sai-row">
+              <select value={origin} onChange={(e) => setOrigin(e.target.value)} className="sai-select">
+                {JUNCTIONS.map((j) => <option key={j} value={j}>From {j}</option>)}
+              </select>
+              <select value={hospital} onChange={(e) => setHospital(e.target.value)} className="sai-select">
+                <option value="">Nearest hospital</option>
+                {Object.keys(rawState.hospitals || {}).map((h) => <option key={h} value={h}>{h}</option>)}
+              </select>
+              <select value={severity} onChange={(e) => setSeverity(Number(e.target.value))} className="sai-select">
+                <option value={1}>Routine</option>
+                <option value={2}>Urgent</option>
+                <option value={3}>Critical</option>
+              </select>
+              <button
+                className="sai-btn primary"
+                disabled={!!busy}
+                onClick={() => act("amb", () => dispatchAmbulance(origin, { hospital, severity }))}
+              >
+                <i className="fas fa-play" /> {ambulances.length ? "Dispatch another" : "Dispatch"}
+              </button>
+            </div>
+          )}
+          {ambulances.length > 1 && (
+            <button className="sai-btn danger" disabled={!!busy} onClick={() => act("amb-all", () => standDownAmbulance())}>
+              Stand down all
+            </button>
+          )}
+          <div className="sai-hint">
+            Hospitals: {Object.entries(rawState.hospitals || {}).map(([h, j]) => `${h} (${j})`).join(", ")}
+          </div>
         </section>
 
         {/* Feature 24 — emissions vs fixed time */}

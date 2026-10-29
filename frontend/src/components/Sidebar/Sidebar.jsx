@@ -3,8 +3,8 @@ import "./Sidebar.css";
 
 // hidden: page still exists (and can be opened directly) but isn't listed in the menu.
 const NAV = [
-  { id:"board",     icon:"fa-traffic-light",  label:"Physical Board" },
   { id:"overview",  icon:"fa-th",             label:"Matrix Grid" },
+  { id:"board",     icon:"fa-traffic-light",  label:"LED Board" },
   { id:"map",       icon:"fa-map-marked-alt", label:"Live GIS Map" },
   { id:"emergency", icon:"fa-ambulance",      label:"Green Corridor" },
   { id:"analytics", icon:"fa-chart-line",     label:"Analytics" },

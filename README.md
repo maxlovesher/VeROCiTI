@@ -22,6 +22,13 @@
 | `city flow model/` | Flask backend: CityFlow signal simulation, tracking API, webcam / image / video pipelines |
 | `prototype/` | ANPR and vehicle-intelligence modules (YOLOv8, EasyOCR, quality gate, re-identification) |
 | `docs/` | Mobile app designs |
+| `hardware/` | The physical demo board: Arduino Uno sketch, one-command uploader, wiring and setup ([hardware/README.md](hardware/README.md)) |
+
+## Physical demo board (optional)
+
+Two model junctions with 24 LEDs driven by the Signal AI, optionally steered by a phone camera watching toy cars and an
+ambulance card. **Clone, run `hardware\upload_sketch.bat` once for a new Uno, double-click `start.bat`, open the LED Board
+page: the Uno is found by itself.** Full steps and the wiring table are in [hardware/README.md](hardware/README.md).
 
 ## Quick start
 

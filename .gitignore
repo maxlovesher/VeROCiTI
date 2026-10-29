@@ -48,6 +48,8 @@ desktop.ini
 .ruff_cache/
 
 # Physical board: per-machine camera / calibration / serial settings
-board_config.json
+led_board_config.json
+led_board_reference.png
+led_board_anchor.png
 board_reference.png
 board_anchor.png

@@ -41,8 +41,8 @@ export default function App() {
     if (p === "traffic" || p === "tracking") return p;
     return "tracking"; // Start directly from ANPR Vehicle Intelligence portal
   });
-  // The traffic dashboard opens on the physical board; ?view=<id> (e.g. ?view=overview) picks another page.
-  const [view, setView] = useState(() => new URLSearchParams(window.location.search).get("view") || "board");
+  // The traffic dashboard opens on the overview; ?view=<id> (e.g. ?view=signalai) picks another page.
+  const [view, setView] = useState(() => new URLSearchParams(window.location.search).get("view") || "overview");
 
   // Navigation lives in a slide-out panel; closed by default so the main screen gets the full width.
   const [navOpen, setNavOpen] = useState(false);

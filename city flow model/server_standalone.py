@@ -323,13 +323,21 @@ class FleetEngine:
 class TrafficSim:
     """One vehicle fleet plus the multi-agent controller running its signals."""
 
-    def __init__(self, name: str, fixed_time: bool = False, pedestrians: bool = False, seed: Optional[int] = None):
+    def __init__(self, name: str, fixed_time: bool = False, pedestrians: bool = False, seed: Optional[int] = None,
+                 agent_cls: Optional[type] = None, route_weights: Optional[List[float]] = None):
+        """
+        agent_cls: signal controller class for every junction (defaults to
+        TrafficAgent; scripts/compare_schedulers.py swaps in other policies).
+        route_weights: relative demand per entry of ROUTES (default: equal),
+        e.g. to load the main corridor far more heavily than the side streets.
+        """
         self.name = name
         self.fixed_time = fixed_time
         self.pedestrians = pedestrians
         self.rng = random.Random(seed)
+        self.route_weights = route_weights
         self.engine = FleetEngine(self)
-        self.coordinator = MultiAgentCoordinator(self.engine)
+        self.coordinator = MultiAgentCoordinator(self.engine, agent_cls=agent_cls)
         self.fleet: List[ContinuousVehicle] = []
         self.trips: deque = deque(maxlen=TRIP_HISTORY)
         self.od_counts: Counter = Counter()
@@ -360,10 +368,15 @@ class TrafficSim:
 
     def _new_vehicle(self, partial: bool = False, route: Optional[List[str]] = None) -> ContinuousVehicle:
         self.veh_counter += 1
-        route = route or self.rng.choice(ROUTES)
+        route = route or self._pick_route()
         return ContinuousVehicle(
             f"v_{self.veh_counter}", route, _pick_vehicle_class(self.rng), self.rng, self.time, partial
         )
+
+    def _pick_route(self) -> List[str]:
+        if self.route_weights:
+            return self.rng.choices(ROUTES, weights=self.route_weights)[0]
+        return self.rng.choice(ROUTES)
 
     # ── signals ──
     def signal_red(self, road: str) -> bool:
@@ -430,7 +443,7 @@ class TrafficSim:
         attempts = 0
         while len(self.fleet) < FLEET_TARGET and attempts < 6:
             attempts += 1
-            route = self.rng.choice(ROUTES)
+            route = self._pick_route()
             entry = route[0]
             closest = min((v.dist for v in self.fleet if v.road == entry), default=None)
             if closest is not None and closest < SPAWN_CLEARANCE_M + 2.0:
@@ -579,12 +592,13 @@ def _bus_priority_state() -> Dict[str, Dict[str, Any]]:
 
 
 def _ambulance_state() -> Dict[str, Any]:
-    coord = live.coordinator
-    amb = dict(coord.ambulance)
-    route = amb.get("route_junctions") or []
-    if len(route) >= 2:
-        amb["corridor"] = coord._phase_towards(route[0], route[1]) or amb.get("corridor")
-    return amb
+    """The single-ambulance view older dashboards read: the earliest-dispatched one still on the road."""
+    return dict(live.coordinator.ambulance)
+
+
+def _ambulances_state() -> List[Dict[str, Any]]:
+    """Every ambulance on the road, with which junctions it holds and which it's yielding at."""
+    return [dict(a) for a in live.coordinator.active_ambulances()]
 
 
 def _refresh_state():
@@ -651,6 +665,8 @@ def _refresh_state():
             "agent_messages": messages,
             "active_incidents": list(coord.active_incidents.values()),
             "ambulance": _ambulance_state(),
+            "ambulances": _ambulances_state(),
+            "max_ambulances": coord.MAX_ACTIVE_AMBULANCES,
             "hospitals": dict(coord.hospitals),
             "control_mode": coord.degradation.current,
             "control_mode_forced": coord.degradation._forced is not None,
@@ -774,31 +790,41 @@ def handle_incident():
 @app.route("/api/ambulance", methods=["POST"])
 def handle_ambulance():
     """
-    Feature 11: dispatch an ambulance from `origin` to the nearest hospital,
-    or stand it down. Pass {"active": true|false}; omit it to toggle.
+    Feature 11: dispatch an ambulance from `origin` to the nearest hospital, or
+    to a named one ({"active": true, "origin": "J2", "hospital": "Capital
+    Hospital", "severity": 1-3}) — several can be on
+    the road at once — or stand one down ({"active": false, "id": "AMB-2"};
+    leave out "id" to stand them all down). Omit "active" to toggle: stand
+    everything down if any ambulance is out, otherwise dispatch one.
     """
     data = request.get_json(silent=True) or {}
     coord = live.coordinator
     with sim_lock:
         want_active = data.get("active")
         if want_active is None:
-            want_active = not coord.ambulance.get("active", False)
+            want_active = not coord.ambulances
 
         if want_active:
-            if not coord.ambulance.get("active"):
-                origin = data.get("origin", "J1")
-                if origin not in coord.agents:
-                    return jsonify({"ok": False, "error": f"Unknown origin junction '{origin}'"}), 400
-                if coord.dispatch_ambulance(origin) is None:
-                    return jsonify({"ok": False, "error": f"No hospital reachable from {origin}"}), 409
-        else:
-            coord.ambulance["active"] = False
-            coord.ambulance["progress_m"] = 0.0
-            for agent in coord.agents.values():
-                if agent.emergency_override is not None:
-                    agent.set_emergency(None)
+            origin = data.get("origin", "J1")
+            if origin not in coord.agents:
+                return jsonify({"ok": False, "error": f"Unknown origin junction '{origin}'"}), 400
+            if len(coord.ambulances) >= coord.MAX_ACTIVE_AMBULANCES:
+                return jsonify({"ok": False, "error": f"All {coord.MAX_ACTIVE_AMBULANCES} ambulances are already out"}), 409
+            try:
+                severity = int(data.get("severity", 1))
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "severity must be 1, 2 or 3"}), 400
+            hospitals = None
+            if data.get("hospital"):
+                if data["hospital"] not in coord.hospitals:
+                    return jsonify({"ok": False, "error": f"Unknown hospital '{data['hospital']}'"}), 400
+                hospitals = {data["hospital"]: coord.hospitals[data["hospital"]]}
+            if coord.dispatch_ambulance(origin, hospitals=hospitals, severity=severity) is None:
+                return jsonify({"ok": False, "error": f"No hospital reachable from {origin}"}), 409
+        elif not coord.stand_down_ambulance(data.get("id")):
+            return jsonify({"ok": False, "error": f"No active ambulance '{data.get('id')}'"}), 404
     _refresh_state()
-    return jsonify({"ok": True, "ambulance": _ambulance_state()})
+    return jsonify({"ok": True, "ambulance": _ambulance_state(), "ambulances": _ambulances_state()})
 
 
 @app.route("/api/override", methods=["POST"])
@@ -878,16 +904,16 @@ def handle_emissions():
         return jsonify(_emissions_summary())
 
 
-# ── Physical demo board: overhead camera -> Signal AI -> LEDs over USB ──
-if os.environ.get("BOARD_DISABLE") != "1":
+# ── LED board: the Signal AI's lights on the real board (Arduino Uno over USB) ──
+if os.environ.get("LED_BOARD_DISABLE") != "1":
     try:
-        from board_api import agent_signals, register_board_routes
-        register_board_routes(
+        from led_board import agent_signals, register_led_board
+        register_led_board(
             app,
             sim_signals=lambda: {jid: agent_signals(a) for jid, a in live.coordinator.agents.items()},
         )
-    except Exception as _board_err:
-        print(f"[Server] Note: could not mount board routes: {_board_err}")
+    except Exception as _led_err:
+        print(f"[Server] Note: could not mount the LED board: {_led_err}")
 
 
 if __name__ == "__main__":

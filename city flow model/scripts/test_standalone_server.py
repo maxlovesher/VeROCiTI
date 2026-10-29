@@ -220,6 +220,50 @@ class TestServerEndpoints(unittest.TestCase):
         r = self.client.post("/api/ambulance", json={"active": True, "origin": "J9"})
         self.assertEqual(r.status_code, 400)
 
+    def test_two_ambulances_cross_the_same_junction_one_at_a_time(self):
+        # East from J1 and south from J2 both cross J3, in different directions.
+        a = self.client.post("/api/ambulance", json={"active": True, "origin": "J1", "hospital": "City Hospital"}).get_json()
+        b = self.client.post("/api/ambulance", json={"active": True, "origin": "J2", "hospital": "Capital Hospital"}).get_json()
+        self.assertTrue(a["ok"] and b["ok"])
+        self.assertEqual([x["route_junctions"] for x in b["ambulances"]], [["J1", "J3", "J4"], ["J2", "J3", "J5"]])
+
+        coord = srv.live.coordinator
+        link = coord.AMBULANCE_LINK_DISTANCE_M
+        j3 = coord.agents["J3"]
+        crossed, red_runs, arrived = [], [], set()
+        for _ in range(1200):
+            before = {x["id"]: x["progress_m"] for x in coord.active_ambulances()}
+            srv._advance_all()
+            for amb in coord.active_ambulances() + [coord._last_ambulance]:
+                if amb and amb["id"] in before and before[amb["id"]] <= link < amb["progress_m"]:
+                    crossed.append(amb["id"])
+                    want = coord._phase_towards("J3", amb["route_junctions"][2])
+                    if j3.emergency_override != want or j3.phase_names[j3.current_phase] != want or j3.is_yellow:
+                        red_runs.append(amb["id"])
+            last = coord._last_ambulance
+            if last and last.get("arrived_at") is not None:
+                arrived.add(last["id"])
+            if not coord.ambulances:
+                break
+        self.assertEqual(sorted(crossed), ["AMB-1", "AMB-2"])
+        self.assertEqual(red_runs, [], "an ambulance crossed J3 while it was showing the other direction")
+        self.assertEqual(arrived, {"AMB-1", "AMB-2"})
+        self.assertIsNone(j3.emergency_override)
+
+    def test_ambulance_fleet_limit_and_single_stand_down(self):
+        coord = srv.live.coordinator
+        for _ in range(coord.MAX_ACTIVE_AMBULANCES):
+            self.assertTrue(self.client.post("/api/ambulance", json={"active": True, "origin": "J1"}).get_json()["ok"])
+        r = self.client.post("/api/ambulance", json={"active": True, "origin": "J1"})
+        self.assertEqual(r.status_code, 409)
+        first = coord.active_ambulances()[0]["id"]
+        r = self.client.post("/api/ambulance", json={"active": False, "id": first}).get_json()
+        self.assertEqual(len(r["ambulances"]), coord.MAX_ACTIVE_AMBULANCES - 1)
+        self.assertNotIn(first, [x["id"] for x in r["ambulances"]])
+        self.assertEqual(self.client.post("/api/ambulance", json={"active": False, "id": "AMB-404"}).status_code, 404)
+        self.client.post("/api/ambulance", json={"active": False})
+        self.assertEqual(srv._ambulances_state(), [])
+
     def test_sensor_fault_walks_down_the_ladder_and_back(self):
         self.client.post("/api/sensor_fault", json={"active": True})
         modes = []

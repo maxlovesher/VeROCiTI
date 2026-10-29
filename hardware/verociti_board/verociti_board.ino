@@ -6,7 +6,8 @@
 
       S<J1 EW><J1 NS><J2 EW><J2 NS>...<J5 EW><J5 NS>\n     e.g. SGRRGYRGRRG
 
-  each character R / Y / G (that head group's lamp) or O (off, lamp test).
+  each character R / Y / G (that head group's lamp), O (off, lamp test) or
+  W (all three lamps on, to check every LED: send SWWWWWWWWWW).
   Two Nanos share the board and both receive the same line:
       Nano A -> J1, J2, J3   (18 pins)
       Nano B -> J4, J5       (12 pins)
@@ -62,9 +63,9 @@ void writeLamp(uint8_t pin, bool on) {
 }
 
 void showGroup(uint8_t g, char state) {
-  writeLamp(PINS[g][0], state == 'R');
-  writeLamp(PINS[g][1], state == 'Y');
-  writeLamp(PINS[g][2], state == 'G');
+  writeLamp(PINS[g][0], state == 'R' || state == 'W');
+  writeLamp(PINS[g][1], state == 'Y' || state == 'W');
+  writeLamp(PINS[g][2], state == 'G' || state == 'W');
 }
 
 void showAll(char state) {
@@ -76,7 +77,7 @@ void applyFrame() {
   if (lineLen < 1 + FIRST_GROUP + GROUPS || line[0] != 'S') return;
   for (uint8_t g = 0; g < GROUPS; g++) {
     char c = line[1 + FIRST_GROUP + g];
-    if (c != 'R' && c != 'Y' && c != 'G' && c != 'O') return;   // corrupted line: keep the last good state
+    if (c != 'R' && c != 'Y' && c != 'G' && c != 'O' && c != 'W') return;   // corrupted line: keep the last good state
   }
   for (uint8_t g = 0; g < GROUPS; g++) showGroup(g, line[1 + FIRST_GROUP + g]);
   lastFrameMs = millis();

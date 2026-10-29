@@ -31,7 +31,7 @@ $BackendPort  = 5000
 $FrontendPort = 5173
 $AiPort       = 8000
 $CudaWheelIndex = 'https://download.pytorch.org/whl/cu128'
-$DashboardUrl = "http://localhost:$FrontendPort/?portal=traffic"   # traffic dashboard, which opens on the physical board
+$DashboardUrl = "http://localhost:$FrontendPort/?portal=traffic"   # traffic dashboard
 
 function Say([string]$text, [string]$color = 'Gray') { Write-Host $text -ForegroundColor $color }
 function Step([string]$text) { Say "  > $text" 'Cyan' }

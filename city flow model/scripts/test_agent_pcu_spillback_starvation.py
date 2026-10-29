@@ -232,5 +232,88 @@ class TestStarvationHardCap(unittest.TestCase):
         self.assertNotIn("Hard starvation cap", reason)
 
 
+class TestFairScheduling(unittest.TestCase):
+    """Congestion-first with aging: a jammed approach goes first, but a waiting one is never shut out."""
+
+    TICK_S = 3   # the live servers decide every 3 simulated seconds
+
+    def _jammed_main_road_one_car_side_road(self):
+        engine = FakeEngine(
+            lane_vehicles={"road_A_0": 14, "road_B_0": 1},
+            lane_waiting={"road_A_0": 14, "road_B_0": 1},
+            current_time=0,
+        )
+        return engine, make_agent(engine, outgoing_neighbors={"EW": None, "NS": None})
+
+    def _tick(self, engine, agent):
+        engine._current_time += self.TICK_S
+        agent.observe({})
+        return agent.decide_and_act({})
+
+    def test_red_wait_is_measured_in_seconds_and_resets_on_green(self):
+        engine, agent = self._jammed_main_road_one_car_side_road()
+        for _ in range(5):
+            self._tick(engine, agent)
+        self.assertEqual(agent.local_obs["NS"]["red_wait_s"], 4 * self.TICK_S)
+        self.assertEqual(agent.local_obs["EW"]["red_wait_s"], 0.0)   # EW is green
+
+    def test_aging_raises_priority_of_a_waiting_approach(self):
+        engine, agent = self._jammed_main_road_one_car_side_road()
+        agent.observe({})
+        fresh = agent.compute_priority("NS", {})
+        agent.local_obs["NS"]["red_wait_s"] = TrafficAgent.AGING_FULL_S
+        aged = agent.compute_priority("NS", {})
+        self.assertAlmostEqual(aged - fresh, 1.0, places=3)
+
+    def test_one_car_on_side_road_gets_green_despite_jammed_main_road(self):
+        engine, agent = self._jammed_main_road_one_car_side_road()
+        served_after_s = None
+        reason = ""
+        for _ in range(200):
+            reason = self._tick(engine, agent)
+            if agent.is_yellow and agent.target_phase == agent.phase_names.index("NS"):
+                served_after_s = engine._current_time
+                break
+        self.assertIsNotNone(served_after_s, "side road was never served")
+        self.assertLessEqual(served_after_s, TrafficAgent.MAX_RED_WAIT_S + self.TICK_S)
+        self.assertIn("waiting", reason)
+
+    def test_hard_guarantee_fires_even_without_aging(self):
+        engine, agent = self._jammed_main_road_one_car_side_road()
+        agent.AGING_FULL_S = 1e9    # aging off: only the guarantee is left
+        agent.MAX_GREEN = 10 ** 6   # and no max-green rescue either
+        reason = ""
+        for _ in range(200):
+            reason = self._tick(engine, agent)
+            if agent.is_yellow:
+                break
+        self.assertIn("Fairness guarantee", reason)
+        self.assertGreaterEqual(engine._current_time, TrafficAgent.MAX_RED_WAIT_S)
+        self.assertLessEqual(engine._current_time, TrafficAgent.MAX_RED_WAIT_S + 2 * self.TICK_S)
+
+    def test_max_green_never_hands_the_green_to_an_empty_road(self):
+        # Seen on the demo board: 3 cars queued on the green approach, none on the other, and max
+        # green still switched the lights to the empty road.
+        engine = FakeEngine(lane_vehicles={"road_A_0": 3}, lane_waiting={"road_A_0": 3}, current_time=0)
+        agent = make_agent(engine, outgoing_neighbors={"EW": None, "NS": None})
+        for _ in range(TrafficAgent.MAX_GREEN + 5):
+            reason = self._tick(engine, agent)
+            self.assertFalse(agent.is_yellow, reason)
+        self.assertEqual(agent.phase_names[agent.current_phase], "EW")
+        engine._lane_vehicles["road_B_0"] = 1                 # someone arrives on the other road
+        engine._lane_waiting["road_B_0"] = 1
+        reason = self._tick(engine, agent)
+        self.assertTrue(agent.is_yellow)
+        self.assertIn("Max green", reason)
+
+    def test_congestion_still_decides_while_waits_are_short(self):
+        engine, agent = self._jammed_main_road_one_car_side_road()
+        reason = ""
+        for _ in range(TrafficAgent.MIN_GREEN + 1):
+            reason = self._tick(engine, agent)
+        self.assertFalse(agent.is_yellow)
+        self.assertIn("Maintaining EW-Green", reason)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -100,9 +100,14 @@ $$\text{Green Duration} = T_{\min} + \text{Priority} \times (T_{\max} - T_{\min}
 
 ---
 
-### 4. Anti-Starvation Protection
-If an unserved direction has been waiting for more than $T_{\text{starve}} = 40\text{s}$, a priority escalation boost is injected:
-$$\text{Priority}_{\text{boost}} = \min\left(0.6, \frac{\text{Wait Time} - T_{\text{starve}}}{T_{\text{starve}}} \times 0.5\right)$$
+### 4. Fair Scheduling: Congestion First, With Aging
+Congestion decides who goes first, but every second a direction waits on red adds to its priority (aging), so a quiet side road is delayed by a busy main road but never shut out:
+$$\text{Priority}_m = \text{Congestion Score}_m \times \text{Capacity Factor} + \frac{\max(0,\ W_m - T_{\text{grace}})}{T_{\text{age}}}$$
+where $W_m$ is how long the head of direction $m$'s queue has been held on red, in real seconds. $T_{\text{age}} = 90\text{s}$ (`AGING_FULL_S`): after 90 s of waiting, aging alone is worth the largest possible congestion score. $T_{\text{grace}} = 0$ (`AGING_GRACE_S`).
+
+On top of that, a hard guarantee: once any direction has waited $W_{\max} = 120\text{s}$ (`MAX_RED_WAIT_S`) it is served next, however congested the green direction is. Only an ambulance preemption or a protected pedestrian walk can delay it. Measured against FCFS, SRTF, longest-queue-first, max-pressure and fixed time in [`docs/scheduler_comparison.md`](../docs/scheduler_comparison.md) (re-run with `python "city flow model/scripts/compare_schedulers.py"`).
+
+> Note: the controller decides every 3 s, and `MIN_GREEN`, `MAX_GREEN` and `STARVATION_HARD_CAP` are counted in decisions, so they mean 30 s, 120 s and 165 s of real time. The aging and wait-guarantee figures above are already real seconds.
 
 ---
 
@@ -119,6 +124,7 @@ $$\text{Priority}_{\text{boost}} = \min\left(0.6, \frac{\text{Wait Time} - T_{\t
    * Dispatch an ambulance across the West-to-East arterial corridor (`J1 → J3 → J4`).
    * Illuminates the entire road in a **luminous emerald green wave** with streaming forward chevrons (`▲ ▲ ▲`).
    * Agents dynamically preempt signals to maintain continuous green passage.
+   * Up to 4 ambulances at once. When two need the same junction in different directions, it goes to the one that will arrive first (ties: more severe case, then earlier dispatch); the other waits at the stop line, never runs a red, and gets the junction as soon as the first has cleared it. Ambulances heading the same way share the green.
 4. **⚠️ Real-Time Incident Resilience**:
    * Inject accidents/roadblocks on any link.
    * Upstream agents detect the downstream blockage, drop capacity to $5\%$, and divert traffic to alternate avenues.

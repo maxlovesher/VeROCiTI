@@ -193,6 +193,13 @@ class TestCoordinatorAmbulanceIntegration(unittest.TestCase):
         engine = FakeEngine(lane_vehicles={}, lane_waiting={})
         return MultiAgentCoordinator(engine)
 
+    @staticmethod
+    def _drive(coordinator):
+        """One corridor update plus one signal decision per junction, keeping each agent's local_obs as the test set it."""
+        coordinator._update_ambulances()
+        for agent in coordinator.agents.values():
+            agent.decide_and_act({})
+
     def test_dispatch_picks_nearest_hospital_and_route(self):
         coordinator = self._build()
         result = coordinator.dispatch_ambulance(origin_junction="J1")
@@ -216,7 +223,7 @@ class TestCoordinatorAmbulanceIntegration(unittest.TestCase):
 
         steps_to_trigger = None
         for step in range(1, 15):
-            coordinator._update_ambulance()
+            self._drive(coordinator)
             if "J1" in coordinator.ambulance["triggered_junctions"]:
                 steps_to_trigger = step
                 break
@@ -243,7 +250,7 @@ class TestCoordinatorAmbulanceIntegration(unittest.TestCase):
 
         def steps_until_triggered(coordinator):
             for step in range(1, 25):
-                coordinator._update_ambulance()
+                self._drive(coordinator)
                 if "J3" in coordinator.ambulance["triggered_junctions"]:
                     return step
             return None
@@ -260,16 +267,152 @@ class TestCoordinatorAmbulanceIntegration(unittest.TestCase):
         for agent in coordinator.agents.values():
             agent.local_obs = {"EW": {"queue_length": 0}, "NS": {"queue_length": 0}}
 
+        j1_recovered = False
         for _ in range(200):   # plenty of steps to traverse J1 -> J3 -> J4
-            coordinator._update_ambulance()
+            self._drive(coordinator)
+            j1_recovered = j1_recovered or coordinator.agents["J1"].recovery_mode
             if not coordinator.ambulance["active"]:
                 break
 
         self.assertFalse(coordinator.ambulance["active"])
         self.assertIsNone(coordinator.agents["J1"].emergency_override)
         self.assertIsNone(coordinator.agents["J3"].emergency_override)
-        # Both intermediate junctions should have entered recovery once cleared.
-        self.assertTrue(coordinator.agents["J1"].recovery_mode or coordinator.agents["J1"].step_counter == 0)
+        # J1 should have entered its recovery phase as soon as it was cleared.
+        self.assertTrue(j1_recovered)
+
+
+class TestMultipleAmbulances(unittest.TestCase):
+    """Several ambulances at once: J1->J3->J4 runs EW through J3, J2->J3->J5 runs NS through it."""
+
+    EAST = {"City Hospital": "J4"}
+    SOUTH = {"Capital Hospital": "J5"}
+
+    def _build(self):
+        coordinator = MultiAgentCoordinator(FakeEngine(lane_vehicles={}, lane_waiting={}))
+        for agent in coordinator.agents.values():
+            agent.local_obs = {"EW": {"queue_length": 0}, "NS": {"queue_length": 0}}
+        return coordinator
+
+    @staticmethod
+    def _drive(coordinator):
+        coordinator._update_ambulances()
+        for agent in coordinator.agents.values():
+            agent.decide_and_act({})
+
+    def _run(self, coordinator, steps=400, on_step=None):
+        for _ in range(steps):
+            before = {a["id"]: a["progress_m"] for a in coordinator.active_ambulances()}
+            self._drive(coordinator)
+            if on_step:
+                on_step(before)
+            if not coordinator.ambulances:
+                return
+        self.fail("ambulances never all arrived")
+
+    def _conflict(self, coordinator, head_start=4):
+        """First ambulance heads east from J1; after a head start a second heads south from J2. Both cross J3."""
+        first = coordinator.dispatch_ambulance("J1", self.EAST)["id"]
+        for _ in range(head_start):
+            self._drive(coordinator)
+        second = coordinator.dispatch_ambulance("J2", self.SOUTH)["id"]
+        return first, second
+
+    def test_two_ambulances_can_be_dispatched(self):
+        coordinator = self._build()
+        a = coordinator.dispatch_ambulance("J1", self.EAST)
+        b = coordinator.dispatch_ambulance("J2", self.SOUTH)
+        self.assertNotEqual(a["id"], b["id"])
+        self.assertEqual(len(coordinator.active_ambulances()), 2)
+
+    def test_conflict_goes_to_the_one_arriving_first_and_both_arrive(self):
+        coordinator = self._build()
+        first, second = self._conflict(coordinator)
+        link = coordinator.AMBULANCE_LINK_DISTANCE_M
+        j3_owners, crossings, finished = [], [], {}
+
+        def watch(before):
+            holder = coordinator.junction_holder.get("J3")
+            if holder and (not j3_owners or j3_owners[-1] != holder):
+                j3_owners.append(holder)
+            for amb in coordinator.active_ambulances():
+                finished[amb["id"]] = amb
+            last = coordinator._last_ambulance
+            if last:
+                finished[last["id"]] = last
+            for amb_id, prev in before.items():
+                if prev <= link < finished[amb_id]["progress_m"]:
+                    crossings.append(amb_id)
+
+        self._run(coordinator, on_step=watch)
+        self.assertEqual(j3_owners[0], first)
+        self.assertIn(second, j3_owners)
+        self.assertEqual(crossings, [first, second])
+        self.assertGreater(finished[second]["held_steps"], 0, "the second ambulance should have had to wait")
+
+    def test_loser_waits_at_red_instead_of_running_it(self):
+        coordinator = self._build()
+        _, second = self._conflict(coordinator)
+        link = coordinator.AMBULANCE_LINK_DISTANCE_M
+        violations = []
+
+        def watch(before):
+            amb = coordinator.ambulances.get(second)
+            if amb and before.get(second, 0) <= link < amb["progress_m"]:
+                j3 = coordinator.agents["J3"]
+                if j3.emergency_override != "NS" or j3.phase_names[j3.current_phase] != "NS":
+                    violations.append(amb["progress_m"])
+
+        self._run(coordinator, on_step=watch)
+        self.assertEqual(violations, [])
+
+    def test_same_direction_ambulances_share_the_green(self):
+        coordinator = self._build()
+        coordinator.dispatch_ambulance("J1", self.EAST)
+        coordinator.dispatch_ambulance("J2", self.EAST)   # J2->J3->J4: EW through J3 as well
+        yielded = []
+
+        def watch(_before):
+            for amb in coordinator.active_ambulances():
+                if "J3" in amb["yielding_to"]:
+                    yielded.append(amb["id"])
+
+        self._run(coordinator, on_step=watch)
+        self.assertEqual(yielded, [])
+
+    def test_tie_goes_to_the_more_severe_case(self):
+        coordinator = self._build()
+        routine = coordinator.dispatch_ambulance("J1", self.EAST, severity=1)["id"]
+        critical = coordinator.dispatch_ambulance("J2", self.SOUTH, severity=3)["id"]
+        for _ in range(30):
+            self._drive(coordinator)
+            if "J3" in coordinator.junction_holder:
+                break
+        self.assertEqual(coordinator.junction_holder["J3"], critical)
+        self.assertEqual(coordinator.ambulances[routine]["yielding_to"].get("J3"), critical)
+
+    def test_stand_down_one_keeps_the_other_running(self):
+        coordinator = self._build()
+        a = coordinator.dispatch_ambulance("J1", self.EAST)["id"]
+        b = coordinator.dispatch_ambulance("J2", self.SOUTH)["id"]
+        self._drive(coordinator)
+        self.assertTrue(coordinator.stand_down_ambulance(a))
+        self.assertEqual([x["id"] for x in coordinator.active_ambulances()], [b])
+        self.assertIsNone(coordinator.agents["J1"].emergency_override)
+        self.assertEqual(coordinator.agents["J2"].emergency_override, "NS")
+        self.assertFalse(coordinator.stand_down_ambulance("AMB-404"))
+
+    def test_fleet_limit(self):
+        coordinator = self._build()
+        for _ in range(coordinator.MAX_ACTIVE_AMBULANCES):
+            self.assertIsNotNone(coordinator.dispatch_ambulance("J1", self.EAST))
+        self.assertIsNone(coordinator.dispatch_ambulance("J1", self.EAST))
+
+    def test_old_single_ambulance_view_follows_the_earliest_dispatch(self):
+        coordinator = self._build()
+        a = coordinator.dispatch_ambulance("J1", self.EAST)["id"]
+        coordinator.dispatch_ambulance("J2", self.SOUTH)
+        self.assertEqual(coordinator.ambulance["id"], a)
+        self.assertTrue(coordinator.ambulance["active"])
 
 
 if __name__ == "__main__":
